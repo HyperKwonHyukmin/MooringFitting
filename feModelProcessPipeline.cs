@@ -111,7 +111,7 @@ namespace MooringFitting2026.Pipeline
 
       RunStage("STAGE_03", () =>
       {
-        ElementIntersectionSplitRun();
+        ElementIntersectionSplitRun(optStage3.DebugMode);
       }, optStage3);
 
       //// Stage 03.5 : Duplicate 되어 있는 부재들의 등가 Property 계산하여 Element 1개로 치환
@@ -180,13 +180,13 @@ namespace MooringFitting2026.Pipeline
       Console.WriteLine(result);
     }
 
-    private void ElementIntersectionSplitRun()
+    private void ElementIntersectionSplitRun(bool isDebug)
     {
       var opt = new ElementIntersectionSplitModifier.Options(
          DistTol: 1.0,
          GridCellSize: 200.0,
          DryRun: false, // false면 수행
-         Debug: false
+         Debug: isDebug
        );
 
       var r = ElementIntersectionSplitModifier.Run(_context, opt, Console.WriteLine);
