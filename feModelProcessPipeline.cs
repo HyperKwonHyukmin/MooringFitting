@@ -5,6 +5,7 @@ using MooringFitting2026.Model.Entities;
 using MooringFitting2026.Modifier.ElementModifier;
 using MooringFitting2026.Modifier.NodeModifier;
 using MooringFitting2026.Utils.Geometry;
+using MooringFitting2026.Services.SectionProperties;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -35,7 +36,7 @@ namespace MooringFitting2026.Pipeline
       NodeZPlaneNormalizeModifier.Run(_context);
 
       // STAGE_00 : 원본 CSV 그대로 FE Model 출력
-      ExportBaseline();
+      //ExportBaseline();
 
       RunStagedPipeline();
     }
@@ -50,29 +51,40 @@ namespace MooringFitting2026.Pipeline
 
     private void RunStagedPipeline()
     {
+      var optStage1 = new InspectorOptions
+      {
+        DebugMode = false,         // 요약만 출력
+        CheckTopology = false,      // 기본 연결성 확인
+        CheckGeometry = false,     // (이미 검증되었다면 생략 가능)
+        CheckEquivalence = false,  // (오래 걸릴 수 있음)
+        CheckDuplicate = false,     // 치명적이므로 유지
+        CheckIntegrity = false,
+        CheckIsolation = false
+      };
+
       // Stage 01 : 미세하게 틀어지며 겹치는 Element의 경우 동일한 벡터로 element 각 수정하고 겹치는 Node 기준 모두 쪼개기
       RunStage("STAGE_01", () =>
       {
-        ElementCollinearOverlapGroupRun();
-      });
+        ElementCollinearOverlapGroupRun(optStage1.DebugMode);
+      }, optStage1); // RunStage가 opt를 받도록 수정 필요
 
-      // Stage 02 : Element 선상에 존재하는 Node 기준으로 Element 모두 쪼개기 
+      //// Stage 02 : Element 선상에 존재하는 Node 기준으로 Element 모두 쪼개기 
       RunStage("STAGE_02", () =>
       {
         ElementSplitByExistingNodesRun();
       });
 
-      // Stage 03 : Element 끼리 서로 교차하는 교점을 Node를 만들어, 그 Node 기준 Element 쪼개기 
-      RunStage("STAGE_03", () =>
-      {
-        ElementIntersectionSplitRun();
-      });
+      //// Stage 03 : Element 끼리 서로 교차하는 교점을 Node를 만들어, 그 Node 기준 Element 쪼개기 
+      //RunStage("STAGE_03", () =>
+      //{
+      //  ElementIntersectionSplitRun();
+      //});
 
-      // Stage 03.5 : Duplicate 되어 있는 부재들의 등가 Property 계산하여 Element 1개로 치환
-      RunStage("STAGE_03_5", () =>
-      {
-        ElementDuplicateMergeRun();
-      });
+      //// Stage 03.5 : Duplicate 되어 있는 부재들의 등가 Property 계산하여 Element 1개로 치환
+      //RunStage("STAGE_03_5", () =>
+      //{
+      //  ElementDuplicateMergeRun();
+      //});
 
       // Stage 04 :임의 Element의 Node 1개가 다른 Element 선상에서 일정거리 떨어진 경우, 방향백터로 확장하여 붙이기 
       //RunStage("STAGE_04", () =>
@@ -82,30 +94,51 @@ namespace MooringFitting2026.Pipeline
 
     }
 
-    private void RunStage(string stageName, Action action)
+    // [수정] 세 번째 인자(stageOptions)를 선택적으로 받을 수 있도록 변경
+    private void RunStage(string stageName, Action action, InspectorOptions stageOptions = null)
     {
       Console.WriteLine($"================ {stageName} =================");
+
+      // 파이프라인 로직 수행
       action();
-      StructuralSanityInspector.Inspect(_context, _inspectOpt);
+
+      // 전달받은 옵션이 있으면 그것을 쓰고, 없으면(null) 클래스 기본 옵션(_inspectOpt) 사용
+      var optionsToUse = stageOptions ?? _inspectOpt;
+
+      // 검사 수행
+      //StructuralSanityInspector.Inspect(_context, optionsToUse);
+
+      // 결과 내보내기
       BdfExporter.Export(_context, _csvPath, stageName);
     }
 
-    private void ElementCollinearOverlapGroupRun()
+    private void ElementCollinearOverlapGroupRun(bool isDebug)
     {
+      if(isDebug) Console.WriteLine(">>> [STAGE 01] Start Collinear/Overlap Check...");
+
       var overlapGroup = ElementCollinearOverlapGroupInspector.FindSegmentationGroups(
         _context, angleToleranceRad: 3e-2, distanceTolerance: 20.0);
 
-      ElementCollinearOverlapAlignSplitModifier.Run(_context, overlapGroup,
-        tTol: 0.05, minSegLenTol: 1e-3, debug: false);
+      if (isDebug) Console.WriteLine($"   -> Found {overlapGroup.Count} overlap groups.");
+
+      // 디버깅 활성화 (debug: true)
+      ElementCollinearOverlapAlignSplitModifier.Run(
+          _context,
+          overlapGroup,
+          tTol: 0.05,
+          minSegLenTol: 1e-3,
+          debug: isDebug,  
+          log: Console.WriteLine 
+      );
     }
 
-    private void ElementSplitByExistingNodesRun()
+    private void ElementSplitByExistingNodesRun(bool isDebug)
     {
       var opt = new ElementSplitByExistingNodesModifier.Options(
         DistanceTol: 1.0,
         GridCellSize: 5.0,
         DryRun: false, // false면 수행
-        Debug: false
+        Debug: isDebug
       );
 
       var result = ElementSplitByExistingNodesModifier.Run(_context, opt, Console.WriteLine);
@@ -164,21 +197,84 @@ namespace MooringFitting2026.Pipeline
 
     private void ElementDuplicateMergeRun()
     {
+      Console.WriteLine(">>> [STAGE 03.5] Merging Duplicate Elements with Parallel Axis Theorem...");
+
+      // 1. 중복 그룹 찾기
       var duplicateGroups = ElementDuplicateInspector.FindDuplicateGroups(_context);
 
-      if (duplicateGroups.Count > 0)
+      if (duplicateGroups.Count == 0)
       {
-        foreach (var group in duplicateGroups)
-        {
-          foreach(var ele in group)
-          {
-            Console.WriteLine($"{ele}:{_context.Elements[ele]}");
-          }
-          Console.WriteLine();
- 
-        }
-  
+        Console.WriteLine("No duplicate elements found.");
+        return;
       }
+
+      int mergedCount = 0;
+
+      foreach (var groupIDs in duplicateGroups)
+      {
+        // 그룹 유효성 체크
+        if (groupIDs == null || groupIDs.Count < 2) continue;
+
+        // Element 객체 리스트 확보
+        var targetElements = new List<Element>();
+        foreach (var id in groupIDs)
+        {
+          if (_context.Elements.Contains(id))
+            targetElements.Add(_context.Elements[id]);
+        }
+
+        if (targetElements.Count < 2) continue;
+
+        // 2. 등가 물성 계산 (평행축 정리)
+        SectionResult mergedProp = EquivalentPropertyMerger.Merge(targetElements, _context.Properties);
+
+        // 3. 새로운 PBEAM Property 생성
+        // Nastran PBEAM 포맷에 맞게 Dim 구성 (여기서는 예시로 Area, Izz, Iyy, J 순서 저장)
+        // 실제 PBEAM 카드는 더 많은 파라미터가 필요하므로, 추후 BdfExporter에서 이 순서를 맞춰야 함
+        var newDims = new List<double>
+        {
+            mergedProp.Area,
+            mergedProp.Izz,
+            mergedProp.Iyy,
+            mergedProp.J
+        };
+
+        // 재질 ID는 첫 번째 요소의 것을 따라감 (가정)
+        int baseMatID = 1;
+        if (_context.Properties.Contains(targetElements[0].PropertyID))
+        {
+          baseMatID = _context.Properties[targetElements[0].PropertyID].MaterialID;
+        }
+
+        // 새 Property 등록 ("EQUIV_PBEAM" 타입)
+        int newPropID = _context.Properties.AddOrGet("EQUIV_PBEAM", newDims, baseMatID);
+
+        // 4. 모델 업데이트 (병합)
+        // 첫 번째 요소를 대표(Primary)로 남기고 나머지는 삭제
+        int primaryEleID = groupIDs[0];
+        var primaryEle = _context.Elements[primaryEleID];
+
+        // 대표 요소의 Property 교체
+        // (Element는 불변 객체이므로 삭제 후 재생성 혹은 AddWithID 덮어쓰기)
+        var newEle = new Element(primaryEle.NodeIDs.ToList(), newPropID,
+                                 new Dictionary<string, string>(primaryEle.ExtraData));
+
+        // 덮어쓰기
+        _context.Elements.AddWithID(primaryEleID, newEle.NodeIDs.ToList(), newPropID,
+                                    new Dictionary<string, string>(primaryEle.ExtraData));
+
+        // 나머지 요소 삭제
+        for (int i = 1; i < groupIDs.Count; i++)
+        {
+          _context.Elements.Remove(groupIDs[i]);
+        }
+
+        mergedCount++;
+        // (선택) 로그 출력
+        Console.WriteLine($"Merged Elements [{string.Join(",", groupIDs)}] -> ID {primaryEleID} (New PropID: {newPropID})");
+      }
+
+      Console.WriteLine($"Total {mergedCount} groups merged.");
     }
 
     private void ElementExtendToBBoxIntersectAndSplitRun()
