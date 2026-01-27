@@ -1,0 +1,113 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using MooringFitting2026.Model.Geometry; // Point3D, Vector3D 위치
+
+namespace MooringFitting2026.Utils.Geometry
+{
+  public static class Point3dUtils
+  {
+    // =================================================================
+    // 1. 기본 연산 (Arithmetic)
+    // =================================================================
+
+    /// <summary>
+    /// 두 점의 좌표를 더합니다. (P + P)
+    /// 기하학적으로는 정의되지 않지만, 벡터처럼 사용할 때 유용합니다.
+    /// </summary>
+    public static Point3D Add(Point3D a, Point3D b) => new(a.X + b.X, a.Y + b.Y, a.Z + b.Z);
+
+    /// <summary>
+    /// 점(Point)에서 점(Point)을 뺍니다. 결과는 좌표 차이(Point)입니다.
+    /// </summary>
+    public static Point3D Sub(Point3D a, Point3D b) => new(a.X - b.X, a.Y - b.Y, a.Z - b.Z);
+
+    /// <summary>
+    /// [중요] 점(Point)에서 점(Point)을 빼서 '벡터(Vector)'를 반환합니다.
+    /// (P - P = V) -> Vector3dUtils와 연결되는 핵심 고리
+    /// </summary>
+    public static Vector3D SubToVector(Point3D a, Point3D b) => new(a.X - b.X, a.Y - b.Y, a.Z - b.Z);
+
+    /// <summary>
+    /// 점에 스칼라를 곱합니다. (Scaling)
+    /// </summary>
+    public static Point3D Mul(Point3D a, double s) => new(a.X * s, a.Y * s, a.Z * s);
+
+    // =================================================================
+    // 2. 점 특화 기능 (Geometry Specific) - FEA 필수
+    // =================================================================
+
+    /// <summary>
+    /// 두 점 사이의 거리 (DistanceUtils와 로직 동일, 편의성 제공)
+    /// </summary>
+    public static double Dist(Point3D a, Point3D b)
+    {
+      // Sub(a, b) 후 Norm을 구하는 것보다 직접 계산이 성능상 유리 (객체 생성 X)
+      return Math.Sqrt(Math.Pow(a.X - b.X, 2) + Math.Pow(a.Y - b.Y, 2) + Math.Pow(a.Z - b.Z, 2));
+    }
+
+    /// <summary>
+    /// 두 점의 '중점(Mid Point)'을 반환합니다. (P_mid = (A+B)/2)
+    /// </summary>
+    public static Point3D GetMidPoint(Point3D a, Point3D b)
+    {
+      return new Point3D((a.X + b.X) * 0.5, (a.Y + b.Y) * 0.5, (a.Z + b.Z) * 0.5);
+    }
+
+    /// <summary>
+    /// 여러 점들의 '무게중심(Centroid)'을 반환합니다.
+    /// </summary>
+    public static Point3D GetCentroid(IEnumerable<Point3D> points)
+    {
+      if (points == null || !points.Any()) return new Point3D(0, 0, 0);
+
+      double sumX = 0, sumY = 0, sumZ = 0;
+      int count = 0;
+
+      foreach (var p in points)
+      {
+        sumX += p.X;
+        sumY += p.Y;
+        sumZ += p.Z;
+        count++;
+      }
+
+      return new Point3D(sumX / count, sumY / count, sumZ / count);
+    }
+
+    /// <summary>
+    /// 점을 특정 벡터만큼 이동(Translation)시킵니다.
+    /// (P_new = P + V)
+    /// </summary>
+    public static Point3D Move(Point3D p, Vector3D v)
+    {
+      return new Point3D(p.X + v.X, p.Y + v.Y, p.Z + v.Z);
+    }
+
+    // =================================================================
+    // 3. 벡터 연산 호환 (Legacy Support)
+    // =================================================================
+    // 자네가 기존에 사용하던 코드와의 호환성을 위해 남겨두지만, 
+    // 가능한 Vector3dUtils를 사용하는 것을 권장하네.
+
+    public static double Dot(Point3D a, Point3D b) => a.X * b.X + a.Y * b.Y + a.Z * b.Z;
+
+    public static double Norm(Point3D a) => Math.Sqrt(Dot(a, a));
+
+    public static Point3D Normalize(Point3D a)
+    {
+      double n = Norm(a);
+      if (n < 1e-12) return new Point3D(0, 0, 0);
+      return new Point3D(a.X / n, a.Y / n, a.Z / n);
+    }
+
+    public static Point3D Cross(Point3D a, Point3D b) =>
+      new Point3D(
+        a.Y * b.Z - a.Z * b.Y,
+        a.Z * b.X - a.X * b.Z,
+        a.X * b.Y - a.Y * b.X
+      );
+
+    public static Point3D Mid(Point3D a, Point3D b) => new Point3D((a.X + b.X) * 0.5, (a.Y + b.Y) * 0.5, (a.Z + b.Z) * 0.5);
+  }
+}
