@@ -1,0 +1,177 @@
+using MooringFitting.Exporters;
+using MooringFitting2026.Exporters;
+using MooringFitting2026.Inspector;
+using MooringFitting2026.Model.Entities;
+using MooringFitting2026.Utils;
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace MooringFitting2026.Exporters
+{
+  public class BdfBuilder
+  {
+    public int sol;
+    public FeModelContext feModelContext;
+    int LoadCase;
+
+    // BDF에 입력된 텍스트 라인모음 리스트
+    public List<String> BdfLines = new List<String>();
+
+    // 생성자 함수
+    public BdfBuilder(
+      int Sol, FeModelContext FeModelContext, int loadCase = 1)
+    {
+      this.sol = Sol;
+      this.feModelContext = FeModelContext;
+      this.LoadCase = loadCase;
+    }
+
+    public void Run()
+    {
+      // 01. Nastran 솔버 입력
+      ExecutiveControlSection();
+
+      // 02. 출력결과 종류 설정, LoadCase 설정
+      CaseControlSection();
+
+      // 03. Node, Element 데이터 입력
+      NodeElementSection();
+
+      // 04. Property, Material 데이터 입력
+      PropertyMaterialSection();
+
+    }
+
+    // 01. Nastran 솔버 입력
+    public void ExecutiveControlSection()
+    {
+      BdfLines.Add(BdfFormatFields.FormatField($"SOL {this.sol}"));
+      BdfLines.Add(BdfFormatFields.FormatField($"CEND"));
+    }
+
+    // 02. 출력결과 종류 설정, LoadCase 설정
+    public void CaseControlSection()
+    {
+      BdfLines.Add("DISPLACEMENT = ALL");
+      BdfLines.Add("FORCE = ALL");
+      BdfLines.Add("SPCFORCES = ALL");
+      BdfLines.Add("STRESS = ALL");
+
+      for (int i = 1; i <= LoadCase; i++)
+      {
+        BdfLines.Add($"SUBCASE {i}");
+        BdfLines.Add("    ANALYSIS = STATICS");
+        BdfLines.Add($"    LABEL = Load Case {i}");
+        BdfLines.Add("    SPC = 1");
+        BdfLines.Add($"    LOAD = {i}");
+      }
+
+      BdfLines.Add("BEGIN BULK");
+      BdfLines.Add("PARAM,POST,-1");
+    }
+
+    // 03. Node, Element 데이터 입력
+    public void NodeElementSection()
+    {
+      foreach (var node in this.feModelContext.Nodes)
+      {
+        string nodeText = $"{BdfFormatFields.FormatField("GRID")}"
+          + $"{BdfFormatFields.FormatField(node.Key, "right")}"
+          + $"{BdfFormatFields.FormatField("")}"
+          + $"{BdfFormatFields.FormatField(node.Value.X, "right")}"
+          + $"{BdfFormatFields.FormatField(node.Value.Y, "right")}"
+          + $"{BdfFormatFields.FormatField(node.Value.Z, "right")}";
+        BdfLines.Add(nodeText);
+      }
+
+      foreach (var element in this.feModelContext.Elements)
+      {
+        //Console.WriteLine(element);
+        //int nodeA = element.Value.NodeIDs[0];
+        //int nodeB = element.Value.NodeIDs[1];
+        //var directionVector3D = Vector3dUtils.Direction(nodeA, nodeB, feModelContext.Nodes);
+        //double[] dirctionVector = { Math.Round(directionVector3D.X, 1),
+        //  Math.Round(directionVector3D.Y, 1), Math.Round(directionVector3D.Z, 1)};
+        //Console.WriteLine($"{dirctionVector[0]}, {dirctionVector[1]}, {dirctionVector[2]}");
+        string elementText = $"{BdfFormatFields.FormatField("CBEAM")}"
+         + $"{BdfFormatFields.FormatField(element.Key, "right")}"
+         + $"{BdfFormatFields.FormatField(element.Value.PropertyID, "right")}"
+         + $"{BdfFormatFields.FormatField(element.Value.NodeIDs[0], "right")}"
+         + $"{BdfFormatFields.FormatField(element.Value.NodeIDs[1], "right")}"
+         + $"{BdfFormatFields.FormatField(0.0, "right")}"
+         + $"{BdfFormatFields.FormatField(0.0, "right")}"
+         + $"{BdfFormatFields.FormatField(1.0, "right")}"
+         + $"{BdfFormatFields.FormatField("BGG", "right")}";
+        BdfLines.Add(elementText);
+      }
+    }
+
+    public void PropertyMaterialSection()
+    {
+      foreach (var property in this.feModelContext.Properties)
+      {
+        // I 형태
+        if (property.Value.Type == "I")
+        {
+          string propertyText = $"{BdfFormatFields.FormatField("PBEAML")}"
+            + $"{BdfFormatFields.FormatField(property.Key, "right")}"
+            + $"{BdfFormatFields.FormatField(property.Value.MaterialID, "right")}"
+            + $"{BdfFormatFields.FormatField("", "right")}"
+            + $"{BdfFormatFields.FormatField("I", "right")}";
+          BdfLines.Add(propertyText);
+
+          propertyText = $"{BdfFormatFields.FormatField("")}"
+            + $"{BdfFormatFields.FormatField(property.Value.Dim[0], "right")}"
+            + $"{BdfFormatFields.FormatField(property.Value.Dim[1], "right")}"
+            + $"{BdfFormatFields.FormatField(property.Value.Dim[2], "right")}"
+            + $"{BdfFormatFields.FormatField(property.Value.Dim[3], "right")}"
+            + $"{BdfFormatFields.FormatField(property.Value.Dim[4], "right")}"
+            + $"{BdfFormatFields.FormatField(property.Value.Dim[5], "right")}";
+
+          BdfLines.Add(propertyText);
+        }
+
+        // I 형태
+        if (property.Value.Type == "T")
+        {
+          string propertyText = $"{BdfFormatFields.FormatField("PBEAML")}"
+            + $"{BdfFormatFields.FormatField(property.Key, "right")}"
+            + $"{BdfFormatFields.FormatField(property.Value.MaterialID, "right")}"
+            + $"{BdfFormatFields.FormatField("", "right")}"
+            + $"{BdfFormatFields.FormatField("T", "right")}";
+          BdfLines.Add(propertyText);
+
+          propertyText = $"{BdfFormatFields.FormatField("")}"
+            + $"{BdfFormatFields.FormatField(property.Value.Dim[0], "right")}"
+            + $"{BdfFormatFields.FormatField(property.Value.Dim[1], "right")}"
+            + $"{BdfFormatFields.FormatField(property.Value.Dim[2], "right")}"
+            + $"{BdfFormatFields.FormatField(property.Value.Dim[3], "right")}";
+
+          BdfLines.Add(propertyText);
+        }
+      }
+
+      foreach (var material in this.feModelContext.Materials)
+      {
+        string materialText = $"{BdfFormatFields.FormatField("MAT1")}"
+            + $"{BdfFormatFields.FormatField(material.Key, "right")}"
+            + $"{BdfFormatFields.FormatField(material.Value.E, "right")}"
+            + $"{BdfFormatFields.FormatField("")}"
+            + $"{BdfFormatFields.FormatField(material.Value.Nu, "right")}"
+            + $"{BdfFormatFields.FormatField(material.Value.Rho, "right", true)}";
+
+        BdfLines.Add(materialText);
+
+      }
+      //foreach (var line in BdfLines)
+      //{
+      //  Console.WriteLine(line);
+      //}
+    }
+
+  }
+}
