@@ -135,7 +135,7 @@ namespace MooringFitting2026.Pipeline
       
       var optStage4 = new InspectorOptions
       {
-        DebugMode = false,         // 요약만 출력
+        DebugMode = true,         // 요약만 출력
         CheckTopology = false,
         CheckGeometry = false,
         CheckEquivalence = false,
@@ -148,18 +148,25 @@ namespace MooringFitting2026.Pipeline
       {
         var extendOpt = new ElementExtendToBBoxIntersectAndSplitModifier.Options
         {
-          SearchRatio = 2.0,       // Property Dim[2]의 2배 거리까지 검색
-          DefaultSearchDist = 50.0,// Property 없으면 50.0 검색
-          IntersectionTolerance = 1.0, // 교차 허용 오차
-          Debug = optStage4.DebugMode
+          SearchRatio = 1.2,        // 2.0 -> 5.0 (비율 증가)
+          DefaultSearchDist = 50.0, // 기본 거리
+          IntersectionTolerance = 1.0,
+          GridCellSize = 50.0,
+
+          Debug = true,
+          // ★ [진단] 의심되는 노드 번호를 여기에 넣으세요!
+          WatchNodeIDs = new HashSet<int> { 185 } // 예: 142번 노드 감시
         };
 
-        // Modifier 실행
         var result = ElementExtendToBBoxIntersectAndSplitModifier.Run(_context, extendOpt, Console.WriteLine);
-
         Console.WriteLine($"[Stage 04] Extended: {result.SuccessConnections} elements.");
 
-      }, optStage4); 
+      }, optStage4);
+
+      //foreach(var pro in _context.Properties)
+      //{
+      //  Console.WriteLine(pro);
+      //}
     }
 
 
