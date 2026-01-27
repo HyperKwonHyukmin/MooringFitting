@@ -63,6 +63,7 @@ namespace MooringFitting2026.Pipeline
 
     private void RunStagedPipeline()
     {
+
       // Stage 01 : 미세하게 틀어지며 겹치는 Element의 경우 동일한 벡터로 element 각 수정하고 겹치는 Node 기준 모두 쪼개기
       var optStage1 = new InspectorOptions
       {
@@ -80,7 +81,7 @@ namespace MooringFitting2026.Pipeline
       }, optStage1); // RunStage가 opt를 받도록 수정 필요
 
 
-      //// Stage 02 : Element 선상에 존재하는 Node 기준으로 Element 모두 쪼개기 
+      // Stage 02 : Element 선상에 존재하는 Node 기준으로 Element 모두 쪼개기 
       var optStage2 = new InspectorOptions
       {
         DebugMode = false,         // 요약만 출력
@@ -91,11 +92,11 @@ namespace MooringFitting2026.Pipeline
         CheckIntegrity = false,
         CheckIsolation = false
       };
-
       RunStage("STAGE_02", () =>
       {
         ElementSplitByExistingNodesRun(optStage2.DebugMode);
       }, optStage2);
+
 
       // Stage 03 : Element 끼리 서로 교차하는 교점을 Node를 만들어, 그 Node 기준 Element 쪼개기 
       var optStage3 = new InspectorOptions
@@ -108,27 +109,36 @@ namespace MooringFitting2026.Pipeline
         CheckIntegrity = false,
         CheckIsolation = false
       };
-
       RunStage("STAGE_03", () =>
       {
         ElementIntersectionSplitRun(optStage3.DebugMode);
       }, optStage3);
 
-      //// Stage 03.5 : Duplicate 되어 있는 부재들의 등가 Property 계산하여 Element 1개로 치환
-      //RunStage("STAGE_03_5", () =>
-      //{
-      //  ElementDuplicateMergeRun();
-      //});
+
+      // Stage 03.5 : Duplicate 되어 있는 부재들의 등가 Property 계산하여 Element 1개로 치환
+      var optStage3_5 = new InspectorOptions
+      {
+        DebugMode = false,         // 요약만 출력
+        CheckTopology = false,      // 기본 연결성 확인
+        CheckGeometry = false,     // (이미 검증되었다면 생략 가능)
+        CheckEquivalence = false,  // (오래 걸릴 수 있음)
+        CheckDuplicate = false,     // 치명적이므로 유지
+        CheckIntegrity = false,
+        CheckIsolation = false
+      };
+      RunStage("STAGE_03_5", () =>
+      {
+        ElementDuplicateMergeRun(optStage3_5.DebugMode);
+      }, optStage3_5);
 
       // Stage 04 :임의 Element의 Node 1개가 다른 Element 선상에서 일정거리 떨어진 경우, 방향백터로 확장하여 붙이기 
-      //RunStage("STAGE_04", () =>
-      //{
-      //  ElementExtendToBBoxIntersectAndSplitRun();
-      //});
+      RunStage("STAGE_04", () =>
+      {
 
+      });
     }
 
-    // [수정] 세 번째 인자(stageOptions)를 선택적으로 받을 수 있도록 변경
+
     private void RunStage(string stageName, Action action, InspectorOptions stageOptions = null)
     {
       Console.WriteLine($"================ {stageName} =================");
@@ -190,7 +200,6 @@ namespace MooringFitting2026.Pipeline
        );
 
       var r = ElementIntersectionSplitModifier.Run(_context, opt, Console.WriteLine);
-      Console.WriteLine(r);
 
       // 길이가 특정 길이 이상이고 Node 2개중 1개가 자유단이면 삭제 (존재하면 용접위치 병합 시, 엉망됨)
       var nodeDegree = NodeDegreeInspector.BuildNodeDegree(_context);
@@ -224,13 +233,17 @@ namespace MooringFitting2026.Pipeline
         }
       }
       // 실제 삭제
-      foreach (var id in shortEle)
+      if (shortEle.Count > 0)
       {
-        _context.Elements.Remove(id);
+        foreach (var id in shortEle)
+        {
+          _context.Elements.Remove(id);
+        }
+        Console.WriteLine($"[Info] Removed {shortEle.Count} dangling elements (Len < 50.0)");
       }
     }
 
-    private void ElementDuplicateMergeRun()
+    private void ElementDuplicateMergeRun(bool isDebug)
     {
       Console.WriteLine(">>> [STAGE 03.5] Merging Duplicate Elements with Parallel Axis Theorem...");
 
@@ -306,60 +319,10 @@ namespace MooringFitting2026.Pipeline
 
         mergedCount++;
         // (선택) 로그 출력
-        Console.WriteLine($"Merged Elements [{string.Join(",", groupIDs)}] -> ID {primaryEleID} (New PropID: {newPropID})");
+        if (isDebug) Console.WriteLine($"Merged Elements [{string.Join(",", groupIDs)}] -> ID {primaryEleID} (New PropID: {newPropID})");
       }
 
       Console.WriteLine($"Total {mergedCount} groups merged.");
-    }
-
-    private void ElementExtendToBBoxIntersectAndSplitRun()
-    {
-      var opt = new ElementExtendToBBoxIntersectAndSplitModifier.Options
-      {
-        BBoxInflateRatio = 1.0,
-        GridCellSize = 500.0,
-        DistTol = 1.0,
-
-        // ★ 63번, 126번만 집중 감시! (비워두면 null)
-        //WatchList = new HashSet<int> { 63, 126 },
-
-        DryRun = false // 진단 모드니까 true
-      };
-
-      // 로거(원하면 Debug일 때만 출력하도록 바꿔도 됨)
-      Action<string> logger = s => Console.WriteLine(s);
-
-      //var r = ElementExtendToBBoxIntersectAndSplitModifier.Run(_context, opt, logger);
-
-      string logPath = "DebugLog.txt";
-      Console.WriteLine($"[로그 모드] 모든 출력 내용이 '{System.IO.Path.GetFullPath(logPath)}'에 저장됩니다...");
-
-      // 3. 파일 스트림 열기
-      using (System.IO.StreamWriter writer = new System.IO.StreamWriter(logPath))
-      {
-        writer.AutoFlush = true; // 중요: 버퍼링 없이 바로 기록
-
-        // 로거 정의 (화면 + 파일 동시 출력)
-        Action<string> fileLogger = (msg) =>
-        {
-          Console.WriteLine(msg);
-          writer.WriteLine(msg);
-        };
-
-        // 4. Modifier 실행
-        // (_context는 이미 모델이 로드되어 있다고 가정)
-        var result = ElementExtendToBBoxIntersectAndSplitModifier.Run(
-            _context,
-            opt,
-            fileLogger // <--- 로거 전달
-        );
-
-        // 결과 요약 출력
-        fileLogger($"\n[완료] 결과: TotalChecks={result.TotalChecks}, Success={result.SuccessConnections}");
-      }
-
-      Console.WriteLine("프로그램 종료. DebugLog.txt 파일을 열어보세요.");
-
     }
 
   }
