@@ -543,6 +543,29 @@ namespace MooringFitting2026.Modifier.ElementModifier
       return set;
     }
 
+    public HashSet<int> Query(Point3D min, Point3D max)
+    {
+      var result = new HashSet<int>();
+      var (ix0, iy0, iz0) = Key(min);
+      var (ix1, iy1, iz1) = Key(max);
+
+      // min/max 순서가 뒤집혀 있을 경우 대비
+      int x0 = Math.Min(ix0, ix1), x1 = Math.Max(ix0, ix1);
+      int y0 = Math.Min(iy0, iy1), y1 = Math.Max(iy0, iy1);
+      int z0 = Math.Min(iz0, iz1), z1 = Math.Max(iz0, iz1);
+
+      for (int ix = x0; ix <= x1; ix++)
+        for (int iy = y0; iy <= y1; iy++)
+          for (int iz = z0; iz <= z1; iz++)
+          {
+            if (_map.TryGetValue((ix, iy, iz), out var list))
+            {
+              foreach (var nid in list) result.Add(nid);
+            }
+          }
+      return result;
+    }
+
     private bool TryGetSegment(Nodes nodes, Elements elements, int eid, out Point3D a, out Point3D b)
     {
       a = default!;
