@@ -4,13 +4,14 @@ using MooringFitting2026.Inspector.ElementInspector;
 using MooringFitting2026.Model.Entities;
 using MooringFitting2026.Modifier.ElementModifier;
 using MooringFitting2026.Modifier.NodeModifier;
-using MooringFitting2026.Utils.Geometry;
 using MooringFitting2026.Services.SectionProperties;
+using MooringFitting2026.Utils.Geometry;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Xml.Linq;
 
 namespace MooringFitting2026.Pipeline
 {
@@ -45,8 +46,19 @@ namespace MooringFitting2026.Pipeline
     {
       string stageName = "STAGE_00";
       Console.WriteLine($"================ {stageName} =================");
-      StructuralSanityInspector.Inspect(_context, _inspectOpt);
+      var optStage0 = new InspectorOptions
+      {
+        DebugMode = false,         // 요약만 출력
+        CheckTopology = false,      // 기본 연결성 확인
+        CheckGeometry = false,     // (이미 검증되었다면 생략 가능)
+        CheckEquivalence = false,  // (오래 걸릴 수 있음)
+        CheckDuplicate = false,     // 치명적이므로 유지
+        CheckIntegrity = false,
+        CheckIsolation = false
+      };
+      StructuralSanityInspector.Inspect(_context, optStage0);
       BdfExporter.Export(_context, _csvPath, stageName);
+
     }
 
     private void RunStagedPipeline()
@@ -85,11 +97,22 @@ namespace MooringFitting2026.Pipeline
         ElementSplitByExistingNodesRun(optStage2.DebugMode);
       }, optStage2);
 
-      //// Stage 03 : Element 끼리 서로 교차하는 교점을 Node를 만들어, 그 Node 기준 Element 쪼개기 
-      //RunStage("STAGE_03", () =>
-      //{
-      //  ElementIntersectionSplitRun();
-      //});
+      // Stage 03 : Element 끼리 서로 교차하는 교점을 Node를 만들어, 그 Node 기준 Element 쪼개기 
+      var optStage3 = new InspectorOptions
+      {
+        DebugMode = false,         // 요약만 출력
+        CheckTopology = false,      // 기본 연결성 확인
+        CheckGeometry = false,     // (이미 검증되었다면 생략 가능)
+        CheckEquivalence = false,  // (오래 걸릴 수 있음)
+        CheckDuplicate = false,     // 치명적이므로 유지
+        CheckIntegrity = false,
+        CheckIsolation = false
+      };
+
+      RunStage("STAGE_03", () =>
+      {
+        ElementIntersectionSplitRun();
+      }, optStage3);
 
       //// Stage 03.5 : Duplicate 되어 있는 부재들의 등가 Property 계산하여 Element 1개로 치환
       //RunStage("STAGE_03_5", () =>
@@ -117,7 +140,7 @@ namespace MooringFitting2026.Pipeline
       var optionsToUse = stageOptions ?? _inspectOpt;
 
       // 검사 수행
-      //StructuralSanityInspector.Inspect(_context, optionsToUse);
+      StructuralSanityInspector.Inspect(_context, optionsToUse);
 
       // 결과 내보내기
       BdfExporter.Export(_context, _csvPath, stageName);
