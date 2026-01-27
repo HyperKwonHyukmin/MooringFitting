@@ -7,10 +7,6 @@ using System.Linq;
 
 namespace MooringFitting2026.Inspector
 {
-  /// <summary>
-  /// FE 해석 모델의 구조적 건전성(Sanity)을 종합적으로 검증하는 정적 오케스트레이터입니다.
-  /// 위상(Topology), 형상(Geometry), 데이터 무결성(Integrity)을 순차적으로 진단합니다.
-  /// </summary>
   public static class StructuralSanityInspector
   {
     /// <summary>
@@ -19,32 +15,56 @@ namespace MooringFitting2026.Inspector
     public static void Inspect(FeModelContext context, InspectorOptions opt)
     {
       if (context is null) throw new ArgumentNullException(nameof(context));
-      opt ??= new InspectorOptions(); // 호출자가 opt를 null로 줘도 크래시 안 나도록
+      opt ??= new InspectorOptions(); // 방어 로직
 
       Console.WriteLine("\n[Structural Sanity Inspection Started]");
+      // Debug 모드일 때만 안내 메시지 출력
+      if (opt.DebugMode) Console.WriteLine("  * Debug Mode: ON (Detailed Logs Enabled)");
       Console.WriteLine("--------------------------------------------------");
 
+      // [수정 핵심] 각 검사 단계 실행 전 if (opt.Check...) 확인 추가
+
       // 1. 위상학적 연결성 검사 (Topology)
-      InspectTopology(context, opt);
+      if (opt.CheckTopology)
+      {
+        InspectTopology(context, opt);
+      }
 
       // 2. 기하학적 형상 검사 (Geometry)
-      InspectGeometry(context, opt);
+      if (opt.CheckGeometry)
+      {
+        InspectGeometry(context, opt);
+      }
 
       // 3. Equivalence 검사
-      InspectEquivalence(context, opt);
+      if (opt.CheckEquivalence)
+      {
+        InspectEquivalence(context, opt);
+      }
 
       // 4. Duplicate 검사
-      InspectDuplicate(context);
+      if (opt.CheckDuplicate)
+      {
+        InspectDuplicate(context, opt); // (필요하다면 opt 추가 전달)
+      }
 
       // 5. 데이터 무결성 검사 (Integrity)
-      InspectIntegrity(context);
+      if (opt.CheckIntegrity)
+      {
+        InspectIntegrity(context, opt); // (필요하다면 opt 추가 전달)
+      }
 
       // 6. 고립 요소 검사 (Isolation)
-      InspectIsolation(context);
+      if (opt.CheckIsolation)
+      {
+        InspectIsolation(context, opt); // (필요하다면 opt 추가 전달)
+      }
 
       Console.WriteLine("--------------------------------------------------");
       Console.WriteLine("[Inspection Completed]\n");
     }
+
+    // --------------------------------------------------------------------------
 
     private static void InspectTopology(FeModelContext context, InspectorOptions opt)
     {
@@ -53,47 +73,54 @@ namespace MooringFitting2026.Inspector
 
       if (connectedGroups.Count <= 1)
       {
-        Console.WriteLine($"01 - Topology : [PASS] Connected element groups = {connectedGroups.Count}");
+        LogPass($"01 - Topology : Connected groups = {connectedGroups.Count}");
       }
       else
       {
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine($"01 - Topology : [Warning] Disconnected element groups = {connectedGroups.Count}");
-        Console.ResetColor();
+        LogWarning($"01 - Topology : Disconnected groups = {connectedGroups.Count}");
       }
 
       // 02. 노드 사용 빈도(Degree) 분석
       var nodeDegree = NodeDegreeInspector.BuildNodeDegree(context);
 
-      // 자유단 노드 (Degree = 1)
-      var endNodes = nodeDegree
-        .Where(kv => kv.Value == 1)
-        .Select(kv => kv.Key)
-        .ToList();
+      // A. 자유단 노드
+      var endNodes = nodeDegree.Where(kv => kv.Value == 1).Select(kv => kv.Key).ToList();
+      PrintNodeStat("02_A - 자유단 Node (1 conn)", endNodes, opt, isWarning: false);
 
-      PrintNodeStat("02_A - 자유단 Node (1 connection)", endNodes, opt);
-
-      // 미사용 노드 (Degree = 0)
-      // ⚠️ BuildNodeDegree가 "모든 노드"를 0으로 초기화해 넣지 않는 경우,
-      // nodeDegree에 아예 없는 노드가 미사용 노드인데도 누락될 수 있음 → 전체 노드 기준으로 보정
+      // B. 미사용 노드
       var isolatedNodes = context.Nodes.GetAllNodes()
         .Select(kv => kv.Key)
         .Where(id => !nodeDegree.TryGetValue(id, out var deg) || deg == 0)
         .ToList();
 
+      PrintNodeStat("02_B - 미사용 Node (0 conn)", isolatedNodes, opt, isWarning: true);
 
-      PrintNodeStat("02_B - 미사용 Node (0 connection)", isolatedNodes, opt);
-
-      // 고아 노드 제거 (Element 연결 기준)
+      // 고아 노드 제거 (자동 Cleanup)
       int removedOrphans = RemoveOrphanNodesByElementConnection(context, isolatedNodes);
-      if (opt.PrintNodeIds)
-        Console.WriteLine($"[Cleanup] 사용없는 Node 제거 = {removedOrphans}");
+      if (removedOrphans > 0)
+        Console.WriteLine($"      [Cleanup] Removed {removedOrphans} orphan nodes.");
     }
 
     private static void InspectGeometry(FeModelContext context, InspectorOptions opt)
     {
+      // shortElements는 List<(int eleId, int n1, int n2)> 타입임
       var shortElements = ElementDetectShortInspector.Run(context, opt);
-      Console.WriteLine($"03 - Geometry : Short Elements (<{opt.ShortElementDistanceThreshold}) = {shortElements.Count}");
+
+      if (shortElements.Count == 0)
+      {
+        LogPass("03 - Geometry : No short elements found.");
+      }
+      else
+      {
+        LogWarning($"03 - Geometry : Short Elements (<{opt.ShortElementDistanceThreshold}) = {shortElements.Count}");
+
+        if (opt.DebugMode)
+        {
+          // ★ [수정] 튜플에서 eleId만 뽑아서 List<int>로 변환하여 전달
+          var elementIds = shortElements.Select(t => t.eleId).ToList();
+          Console.WriteLine($"      IDs: {SummarizeIds(elementIds, opt)}");
+        }
+      }
     }
 
     private static void InspectEquivalence(FeModelContext context, InspectorOptions opt)
@@ -102,156 +129,156 @@ namespace MooringFitting2026.Inspector
 
       if (coincidentGroups.Count == 0)
       {
-        Console.WriteLine($"04 - Equivalence : [PASS] No coincident nodes found (Tol: {opt.EquivalenceTolerance}).");
+        LogPass($"04 - Equivalence : No coincident nodes (Tol: {opt.EquivalenceTolerance}).");
         return;
       }
 
-      Console.ForegroundColor = ConsoleColor.Yellow;
-      Console.WriteLine($"04 - Equivalence : [Warning] Found {coincidentGroups.Count} groups of coincident nodes!");
-      Console.ResetColor();
+      LogWarning($"04 - Equivalence : Found {coincidentGroups.Count} coincident groups!");
 
-      // 상세 내용 출력 (최대 20개만)
-      int shown = 0;
-      foreach (var group in coincidentGroups.Take(20))
+      if (opt.DebugMode)
       {
-        shown++;
-
-        int repID = group.Count > 0 ? group[0] : -1;
-        string ids = string.Join(", ", group);
-
-        if (repID >= 0 && context.Nodes.Contains(repID)) // ✅
+        int shown = 0;
+        foreach (var group in coincidentGroups.Take(10)) // Debug 모드여도 너무 많으면 10개만
         {
-          var node = context.Nodes[repID];              // ✅ indexer로 좌표 얻기
-          Console.WriteLine($"     Group {shown}: IDs [{ids}] at ({node.X:F3}, {node.Y:F3}, {node.Z:F3})");
-        }
-        else
-        {
-          Console.WriteLine($"     Group {shown}: IDs [{ids}] at (Unknown)");
-        }
-      }
+          shown++;
+          int repID = group.FirstOrDefault();
+          string ids = string.Join(", ", group);
 
-      if (coincidentGroups.Count > 20)
-      {
-        Console.WriteLine("     ... (More groups omitted)");
+          if (context.Nodes.Contains(repID))
+          {
+            var node = context.Nodes[repID];
+            Console.WriteLine($"     Group {shown}: IDs [{ids}] at ({node.X:F1}, {node.Y:F1}, {node.Z:F1})");
+          }
+        }
+        if (coincidentGroups.Count > 10) Console.WriteLine("     ... (More omitted)");
       }
     }
 
-    private static void InspectDuplicate(FeModelContext context)
+    private static void InspectDuplicate(FeModelContext context, InspectorOptions opt)
     {
-      // 수정된 메서드 호출 (반환 타입이 List<List<int>>임)
       var duplicateGroups = ElementDuplicateInspector.FindDuplicateGroups(context);
 
-      if (duplicateGroups.Count > 0)
+      if (duplicateGroups.Count == 0)
       {
-        Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine($"05 - Duplicate : [CRITICAL] Found {duplicateGroups.Count} sets of duplicates!");
+        LogPass("05 - Duplicate : No duplicate elements found.");
+        return;
+      }
 
-        int groupIndex = 1;
+      LogCritical($"05 - Duplicate : Found {duplicateGroups.Count} sets of duplicates!");
+
+      if (opt.DebugMode)
+      {
+        int limit = opt.PrintAllNodeIds ? int.MaxValue : 20;
+        int count = 0;
         foreach (var group in duplicateGroups)
         {
-          // 각 그룹별로 어떤 ID들이 겹쳐있는지 모두 출력
-          Console.WriteLine($"   Set #{groupIndex++}: [{string.Join(", ", group)}]");
+          if (++count > limit) break;
+          Console.WriteLine($"   Set #{count}: [{string.Join(", ", group)}]");
         }
-        Console.ResetColor();
-      }
-      else
-      {
-        Console.WriteLine("05 - Duplicate : [PASS] No duplicate elements found.");
+        if (duplicateGroups.Count > limit) Console.WriteLine("   ...");
       }
     }
 
-    private static void InspectIntegrity(FeModelContext context)
+    private static void InspectIntegrity(FeModelContext context, InspectorOptions opt)
     {
       var invalidElements = ElementIntegrityInspector.FindElementsWithInvalidReference(context);
 
-      if (invalidElements.Count > 0)
+      if (invalidElements.Count == 0)
       {
-        Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine($"06 - Integrity : [FAIL] Invalid reference elements = {invalidElements.Count}");
-        Console.WriteLine($"     IDs to check: {string.Join(", ", invalidElements.Take(10))}{(invalidElements.Count > 10 ? ", ..." : "")}");
-        Console.ResetColor();
+        LogPass("06 - Integrity : All elements reference valid data.");
+        return;
       }
-      else
+
+      LogCritical($"06 - Integrity : Invalid reference elements = {invalidElements.Count}");
+      if (opt.DebugMode)
       {
-        Console.WriteLine("06 - Integrity : [PASS] All elements reference valid data.");
+        Console.WriteLine($"     IDs: {SummarizeIds(invalidElements, opt)}");
       }
     }
 
-    private static void InspectIsolation(FeModelContext context)
+    private static void InspectIsolation(FeModelContext context, InspectorOptions opt)
     {
       var isolation = ElementIsolationInspector.FindIsolatedElements(context);
 
-      if (isolation.Count > 0)
+      if (isolation.Count == 0)
       {
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine($"07 - Isolation : [Warning] Isolated elements = {isolation.Count}");
-        Console.WriteLine($"     IDs to check: {string.Join(", ", isolation.Take(10))}{(isolation.Count > 10 ? ", ..." : "")}");
-        Console.ResetColor();
+        LogPass("07 - Isolation : No isolated elements found.");
+        return;
       }
-      else
+
+      LogWarning($"07 - Isolation : Isolated elements = {isolation.Count}");
+      if (opt.DebugMode)
       {
-        Console.WriteLine("07 - Isolation : [PASS] No isolated elements found.");
+        Console.WriteLine($"     IDs: {SummarizeIds(isolation, opt)}");
       }
     }
 
-    // 리포팅 헬퍼
-    private static void PrintNodeStat(string title, List<int> nodes, InspectorOptions opt)
+    // ==========================================================================
+    // Helper Methods
+    // ==========================================================================
+
+    private static void PrintNodeStat(string title, List<int> nodes, InspectorOptions opt, bool isWarning)
     {
-      Console.WriteLine($"{title} : {nodes.Count}");
+      // 개수가 0개여도 DebugMode가 아니면 굳이 출력 안함 (깔끔하게)
+      if (nodes.Count == 0) return;
 
-      // 옵션이 있고, ID 출력이 켜져있으며, 노드가 있을 때
-      if (opt != null && opt.PrintNodeIds && nodes.Count > 0)
+      string msg = $"{title} : {nodes.Count}";
+      if (isWarning) LogWarning(msg);
+      else Console.WriteLine(msg);
+
+      if (opt.DebugMode && nodes.Count > 0)
       {
-        // 1. 출력 제한 개수 설정 (모두 출력 옵션이면 MaxValue, 아니면 50)
-        int limit = opt.PrintAllNodeIds ? int.MaxValue : 50;
-
-        // 2. 제한 개수만큼 가져오기
-        var subset = nodes.Take(limit);
-        string ids = string.Join(", ", subset);
-
-        // 3. 전체 개수가 제한보다 클 때만 "..." 붙이기
-        if (nodes.Count > limit)
-        {
-          ids += ", ...";
-        }
-
-        Console.WriteLine($"      IDs: {ids}");
+        Console.WriteLine($"      IDs: {SummarizeIds(nodes, opt)}");
       }
+    }
+
+    private static string SummarizeIds(List<int> ids, InspectorOptions opt)
+    {
+      if (ids == null || ids.Count == 0) return "";
+      int limit = opt.PrintAllNodeIds ? int.MaxValue : 30; // 기본 30개만 표시
+
+      var subset = ids.Take(limit);
+      string str = string.Join(", ", subset);
+      if (ids.Count > limit) str += ", ...";
+      return str;
+    }
+
+    private static void LogPass(string msg)
+    {
+      // 성공 메시지는 기본색(흰색/회색)으로 출력하거나 녹색으로 할 수 있음
+      Console.WriteLine($"[PASS] {msg}");
+    }
+
+    private static void LogWarning(string msg)
+    {
+      Console.ForegroundColor = ConsoleColor.Yellow;
+      Console.WriteLine($"[WARN] {msg}");
+      Console.ResetColor();
+    }
+
+    private static void LogCritical(string msg)
+    {
+      Console.ForegroundColor = ConsoleColor.Red;
+      Console.WriteLine($"[FAIL] {msg}");
+      Console.ResetColor();
     }
 
     private static int RemoveOrphanNodesByElementConnection(FeModelContext context, List<int> isolatedNodes)
     {
-      if (isolatedNodes == null || isolatedNodes.Count == 0)
-        return 0;
-
+      if (isolatedNodes == null || isolatedNodes.Count == 0) return 0;
       int removed = 0;
-
-      // 혹시라도 nodeDegree가 틀렸을 수 있으니 "진짜로 element가 참조하는지" 최종 확인 후 삭제
       foreach (var nid in isolatedNodes)
       {
-        if (!context.Nodes.Contains(nid))
-          continue;
-
-        bool referenced = false;
-        foreach (var kv in context.Elements) // Elements는 IEnumerable<KeyValuePair<int, Element>>
+        if (!context.Nodes.Contains(nid)) continue;
+        // 실제 사용 여부 재확인 (성능 위해 최적화 가능)
+        bool referenced = context.Elements.Any(kv => kv.Value.NodeIDs.Contains(nid));
+        if (!referenced)
         {
-          var e = kv.Value;
-          if (e.NodeIDs.Contains(nid))
-          {
-            referenced = true;
-            break;
-          }
+          context.Nodes.Remove(nid);
+          removed++;
         }
-
-        if (referenced)
-          continue;
-
-        context.Nodes.Remove(nid);
-        removed++;
       }
-
       return removed;
     }
-
   }
 }
