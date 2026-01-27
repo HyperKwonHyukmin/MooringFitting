@@ -132,10 +132,34 @@ namespace MooringFitting2026.Pipeline
       }, optStage3_5);
 
       // Stage 04 :임의 Element의 Node 1개가 다른 Element 선상에서 일정거리 떨어진 경우, 방향백터로 확장하여 붙이기 
+      
+      var optStage4 = new InspectorOptions
+      {
+        DebugMode = false,         // 요약만 출력
+        CheckTopology = false,
+        CheckGeometry = false,
+        CheckEquivalence = false,
+        CheckDuplicate = false,
+        CheckIntegrity = false,
+        CheckIsolation = false
+      };
+
       RunStage("STAGE_04", () =>
       {
+        var extendOpt = new ElementExtendToBBoxIntersectAndSplitModifier.Options
+        {
+          SearchRatio = 2.0,       // Property Dim[2]의 2배 거리까지 검색
+          DefaultSearchDist = 50.0,// Property 없으면 50.0 검색
+          IntersectionTolerance = 1.0, // 교차 허용 오차
+          Debug = optStage4.DebugMode
+        };
 
-      });
+        // Modifier 실행
+        var result = ElementExtendToBBoxIntersectAndSplitModifier.Run(_context, extendOpt, Console.WriteLine);
+
+        Console.WriteLine($"[Stage 04] Extended: {result.SuccessConnections} elements.");
+
+      }, optStage4); 
     }
 
 
