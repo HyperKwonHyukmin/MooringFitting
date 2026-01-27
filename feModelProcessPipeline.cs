@@ -51,6 +51,7 @@ namespace MooringFitting2026.Pipeline
 
     private void RunStagedPipeline()
     {
+      // Stage 01 : 미세하게 틀어지며 겹치는 Element의 경우 동일한 벡터로 element 각 수정하고 겹치는 Node 기준 모두 쪼개기
       var optStage1 = new InspectorOptions
       {
         DebugMode = false,         // 요약만 출력
@@ -62,16 +63,27 @@ namespace MooringFitting2026.Pipeline
         CheckIsolation = false
       };
 
-      // Stage 01 : 미세하게 틀어지며 겹치는 Element의 경우 동일한 벡터로 element 각 수정하고 겹치는 Node 기준 모두 쪼개기
       RunStage("STAGE_01", () =>
       {
         ElementCollinearOverlapGroupRun(optStage1.DebugMode);
       }, optStage1); // RunStage가 opt를 받도록 수정 필요
 
+
       //// Stage 02 : Element 선상에 존재하는 Node 기준으로 Element 모두 쪼개기 
+      var optStage2 = new InspectorOptions
+      {
+        DebugMode = false,         // 요약만 출력
+        CheckTopology = false,      // 기본 연결성 확인
+        CheckGeometry = false,     // (이미 검증되었다면 생략 가능)
+        CheckEquivalence = false,  // (오래 걸릴 수 있음)
+        CheckDuplicate = false,     // 치명적이므로 유지
+        CheckIntegrity = false,
+        CheckIsolation = false
+      };
+
       RunStage("STAGE_02", () =>
       {
-        ElementSplitByExistingNodesRun();
+        ElementSplitByExistingNodesRun(optStage2.DebugMode);
       });
 
       //// Stage 03 : Element 끼리 서로 교차하는 교점을 Node를 만들어, 그 Node 기준 Element 쪼개기 
