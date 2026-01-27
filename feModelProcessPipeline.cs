@@ -36,7 +36,7 @@ namespace MooringFitting2026.Pipeline
       NodeZPlaneNormalizeModifier.Run(_context);
 
       // STAGE_00 : 원본 CSV 그대로 FE Model 출력
-      //ExportBaseline();
+      ExportBaseline();
 
       RunStagedPipeline();
     }
@@ -62,7 +62,6 @@ namespace MooringFitting2026.Pipeline
         CheckIntegrity = false,
         CheckIsolation = false
       };
-
       RunStage("STAGE_01", () =>
       {
         ElementCollinearOverlapGroupRun(optStage1.DebugMode);
@@ -84,7 +83,7 @@ namespace MooringFitting2026.Pipeline
       RunStage("STAGE_02", () =>
       {
         ElementSplitByExistingNodesRun(optStage2.DebugMode);
-      });
+      }, optStage2);
 
       //// Stage 03 : Element 끼리 서로 교차하는 교점을 Node를 만들어, 그 Node 기준 Element 쪼개기 
       //RunStage("STAGE_03", () =>
@@ -150,6 +149,7 @@ namespace MooringFitting2026.Pipeline
         DistanceTol: 1.0,
         GridCellSize: 5.0,
         DryRun: false, // false면 수행
+        SnapNodeToLine: false,
         Debug: isDebug
       );
 
