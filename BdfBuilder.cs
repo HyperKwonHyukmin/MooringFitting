@@ -17,16 +17,18 @@ namespace MooringFitting2026.Exporters
     public int sol;
     public FeModelContext feModelContext;
     int LoadCase;
+    public List<int> SpcList = new List<int>();
 
     // BDF에 입력된 텍스트 라인모음 리스트
     public List<String> BdfLines = new List<String>();
 
     // 생성자 함수
     public BdfBuilder(
-      int Sol, FeModelContext FeModelContext, int loadCase = 1)
+      int Sol, FeModelContext FeModelContext, List<int> spcList, int loadCase = 1)
     {
       this.sol = Sol;
       this.feModelContext = FeModelContext;
+      this.SpcList = spcList;
       this.LoadCase = loadCase;
     }
 
@@ -43,6 +45,9 @@ namespace MooringFitting2026.Exporters
 
       // 04. Property, Material 데이터 입력
       PropertyMaterialSection();
+
+      // 05. 경계 조건 데이터 입력
+      BoundaryConditionSection();
 
     }
 
@@ -114,8 +119,34 @@ namespace MooringFitting2026.Exporters
     {
       foreach (var property in this.feModelContext.Properties)
       {
-        // I 형태
-        if (property.Value.Type == "I")
+        string type = property.Value.Type.ToUpper(); // 대소문자 무시
+
+        // 1. PBEAM (직접 입력형 / 등가 물성)
+        // 병합 로직에서 생성한 "EQUIV_PBEAM"도 여기서 처리
+        if (type == "PBEAM" || type == "EQUIV_PBEAM")
+        {
+          // Data Mapping (Dim 리스트 순서: [0]Area, [1]I1(Izz), [2]I2(Iyy), [3]J)
+          // 데이터가 부족할 경우 0.0 처리
+          double A = property.Value.Dim.Count > 0 ? property.Value.Dim[0] : 0.0;
+          double I1 = property.Value.Dim.Count > 1 ? property.Value.Dim[1] : 0.0; // Izz
+          double I2 = property.Value.Dim.Count > 2 ? property.Value.Dim[2] : 0.0; // Iyy
+          double J = property.Value.Dim.Count > 3 ? property.Value.Dim[3] : 0.0;
+          double I12 = 0.0; // 대칭 단면 가정 시 0
+
+          // Format: PBEAM, PID, MID, A, I1, I2, I12, J
+          string propertyText = $"{BdfFormatFields.FormatField("PBEAM")}"
+            + $"{BdfFormatFields.FormatField(property.Key, "right")}"
+            + $"{BdfFormatFields.FormatField(property.Value.MaterialID, "right")}"
+            + $"{BdfFormatFields.FormatNastranField(A)}"    // 8자리 지수표기
+            + $"{BdfFormatFields.FormatNastranField(I1)}"   // 8자리 지수표기
+            + $"{BdfFormatFields.FormatNastranField(I2)}"   // 8자리 지수표기
+            + $"{BdfFormatFields.FormatNastranField(I12)}"  // 0.0
+            + $"{BdfFormatFields.FormatNastranField(J)}";   // 8자리 지수표기
+
+          BdfLines.Add(propertyText);
+        }
+        // 2. PBEAML (파라메트릭 - I Beam)
+        else if (type == "I")
         {
           string propertyText = $"{BdfFormatFields.FormatField("PBEAML")}"
             + $"{BdfFormatFields.FormatField(property.Key, "right")}"
@@ -134,9 +165,8 @@ namespace MooringFitting2026.Exporters
 
           BdfLines.Add(propertyText);
         }
-
-        // I 형태
-        if (property.Value.Type == "T")
+        // 3. PBEAML (파라메트릭 - T Bar)
+        else if (type == "T")
         {
           string propertyText = $"{BdfFormatFields.FormatField("PBEAML")}"
             + $"{BdfFormatFields.FormatField(property.Key, "right")}"
@@ -155,6 +185,7 @@ namespace MooringFitting2026.Exporters
         }
       }
 
+      // Material 출력
       foreach (var material in this.feModelContext.Materials)
       {
         string materialText = $"{BdfFormatFields.FormatField("MAT1")}"
@@ -165,12 +196,12 @@ namespace MooringFitting2026.Exporters
             + $"{BdfFormatFields.FormatField(material.Value.Rho, "right", true)}";
 
         BdfLines.Add(materialText);
-
       }
-      //foreach (var line in BdfLines)
-      //{
-      //  Console.WriteLine(line);
-      //}
+    }
+
+    public void BoundaryConditionSection()
+    {
+
     }
 
   }
