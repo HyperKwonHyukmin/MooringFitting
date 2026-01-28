@@ -1,6 +1,7 @@
 using MooringFitting2026.Model.Entities;
 using MooringFitting2026.Model.Geometry;
 using MooringFitting2026.Utils.Geometry; // Point3dUtils, DistanceUtils
+using MooringFitting2026.RawData;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -15,7 +16,8 @@ namespace MooringFitting2026.Modifier.ElementModifier
       public bool Debug { get; init; } = false;
     }
 
-    public static int Run(FeModelContext context, Options opt, Action<string> log)
+    public static int Run(FeModelContext context, RawStructureData rawStructureData,
+      Options opt, Action<string> log)
     {
       var nodes = context.Nodes;
       var elements = context.Elements;
