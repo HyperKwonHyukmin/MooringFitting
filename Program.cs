@@ -22,10 +22,16 @@ namespace MooringFitting2026
       // 4235호선
       string Data = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part1\MooringFittingData4235.csv";
       string DataLoad = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part1\MooringFittingDataLoad4235.csv";
+
+      // 3414
+      //string Data = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part3\MooringFittingData_3414.csv";
+      //string DataLoad = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part3\MooringFittingDataLoad_3414.csv";
+
+
       string CsvFolderPath = Path.GetDirectoryName(Data);
 
       // 01. Structure 및 WinchLoad CSV 데이터 파싱
-      CsvRawDataParser csvParse = new CsvRawDataParser(Data, DataLoad, debugPrint:false);
+      CsvRawDataParser csvParse = new CsvRawDataParser(Data, DataLoad, debugPrint:true);
       (RawStructureData rawStructureData, WinchData winchData) = csvParse.Run();
 
       // 02. 객체 초기화(깡통 데이터 클래스생성), rawContext에 FE 인스턴드 모두 들어감
@@ -38,13 +44,13 @@ namespace MooringFitting2026
       // 전처리 파이프라인 실행
       var opt = new InspectorOptions
       {
-        PrintNodeIds = true,
-        PrintAllNodeIds = true,          
+        DebugMode = true,    
+        PrintAllNodeIds = true,
         ShortElementDistanceThreshold = 1,
         EquivalenceTolerance = 0.1,
         NearNodeTolerance = 1
       };
-      var feModelPreprocessPipeline = new FeModelProcessPipeline(feModelContext, opt, CsvFolderPath);
+      var feModelPreprocessPipeline = new FeModelProcessPipeline(feModelContext, rawStructureData, opt, CsvFolderPath);
       feModelPreprocessPipeline.Run();
 
     }
