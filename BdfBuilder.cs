@@ -201,7 +201,28 @@ namespace MooringFitting2026.Exporters
 
     public void BoundaryConditionSection()
     {
+      // 리스트가 비어있거나 null이면 작성하지 않음
+      if (this.SpcList == null || this.SpcList.Count == 0) return;
 
+      foreach (int nodeId in this.SpcList)
+      {
+        // ---------------------------------------------------------
+        // Nastran SPC Card Format (Small Field)
+        // 1. Keyword : "SPC"
+        // 2. SID     : Set ID (1로 고정)
+        // 3. G       : Grid ID (Node ID)
+        // 4. C       : Component (자유도, 123456 고정)
+        // 5. D       : Enforced Displacement (0.0 고정)
+        // ---------------------------------------------------------
+
+        string spcLine = $"{BdfFormatFields.FormatField("SPC")}"
+                       + $"{BdfFormatFields.FormatField(1, "right")}"          // SID = 1
+                       + $"{BdfFormatFields.FormatField(nodeId, "right")}"     // Node ID
+                       + $"{BdfFormatFields.FormatField("123456", "right")}"  // DOF
+                       + $"{BdfFormatFields.FormatField(0.0, "right")}";      // Value
+
+        BdfLines.Add(spcLine);
+      }
     }
 
   }
