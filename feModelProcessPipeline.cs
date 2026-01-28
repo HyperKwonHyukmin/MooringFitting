@@ -131,15 +131,15 @@ namespace MooringFitting2026.Pipeline
         ElementDuplicateMergeRun(optStage3_5.DebugMode);
       }, optStage3_5);
 
-      // Stage 04 :임의 Element의 Node 1개가 다른 Element 선상에서 일정거리 떨어진 경우, 방향백터로 확장하여 붙이기 
-      
+
+      // Stage 04 :임의 Element의 Node 1개가 다른 Element 선상에서 일정거리 떨어진 경우, 방향백터로 확장하여 붙이기       
       var optStage4 = new InspectorOptions
       {
         DebugMode = true,         // 요약만 출력
         CheckTopology = false,
         CheckGeometry = false,
         CheckEquivalence = false,
-        CheckDuplicate = false,
+        CheckDuplicate = true,
         CheckIntegrity = false,
         CheckIsolation = false
       };
@@ -155,7 +155,7 @@ namespace MooringFitting2026.Pipeline
 
           Debug = true,
           // ★ [진단] 의심되는 노드 번호를 여기에 넣으세요!
-          WatchNodeIDs = new HashSet<int> { 185 } // 예: 142번 노드 감시
+          //WatchNodeIDs = new HashSet<int> { 185 } // 예: 142번 노드 감시
         };
 
         var result = ElementExtendToBBoxIntersectAndSplitModifier.Run(_context, extendOpt, Console.WriteLine);
@@ -163,10 +163,32 @@ namespace MooringFitting2026.Pipeline
 
       }, optStage4);
 
-      //foreach(var pro in _context.Properties)
-      //{
-      //  Console.WriteLine(pro);
-      //}
+
+      // Stage 05 : Mesh 쪼개기 작업     
+      var optStage5 = new InspectorOptions
+      {
+        DebugMode = false,       
+        CheckTopology = false,
+        CheckGeometry = false,
+        CheckEquivalence = false,
+        CheckDuplicate = false,
+        CheckIntegrity = false,
+        CheckIsolation = false
+      };
+      RunStage("STAGE_05", () =>
+      {
+        var meshOpt = new ElementMeshRefinementModifier.Options
+        {
+          TargetMeshSize = 500.0, // 원하는 메쉬 간격 
+          Debug = true
+        };
+
+        int count = ElementMeshRefinementModifier.Run(_context, meshOpt, Console.WriteLine);
+        Console.WriteLine($"[Stage 05] Meshing Completed. {count} elements refined.");
+
+      }, optStage5);
+
+
     }
 
 
