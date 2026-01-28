@@ -1,9 +1,11 @@
 using MooringFitting2026.Exporters;
 using MooringFitting2026.Inspector;
 using MooringFitting2026.Inspector.ElementInspector;
+using MooringFitting2026.Model;
 using MooringFitting2026.Model.Entities;
 using MooringFitting2026.Modifier.ElementModifier;
 using MooringFitting2026.Modifier.NodeModifier;
+using MooringFitting2026.RawData;
 using MooringFitting2026.Services.SectionProperties;
 using MooringFitting2026.Utils.Geometry;
 using System;
@@ -18,13 +20,15 @@ namespace MooringFitting2026.Pipeline
   public class FeModelProcessPipeline
   {
     private readonly FeModelContext _context;
+    private readonly RawStructureData _rawStructureData;
     private readonly InspectorOptions _inspectOpt;
     private readonly string _csvPath;
 
-    public FeModelProcessPipeline(FeModelContext context, InspectorOptions inspectOpt,
-      string CsvPath)
+    public FeModelProcessPipeline(FeModelContext context, RawStructureData rawStructureData,
+      InspectorOptions inspectOpt, string CsvPath)
     {
       _context = context ?? throw new ArgumentNullException(nameof(context));
+      _rawStructureData = rawStructureData;
       _inspectOpt = inspectOpt ?? new InspectorOptions(); // 방어 로직
       _csvPath = CsvPath;
     }
@@ -183,7 +187,7 @@ namespace MooringFitting2026.Pipeline
           Debug = true
         };
 
-        int count = ElementMeshRefinementModifier.Run(_context, meshOpt, Console.WriteLine);
+        int count = ElementMeshRefinementModifier.Run(_context, _rawStructureData, meshOpt, Console.WriteLine);
         Console.WriteLine($"[Stage 05] Meshing Completed. {count} elements refined.");
 
       }, optStage5);
