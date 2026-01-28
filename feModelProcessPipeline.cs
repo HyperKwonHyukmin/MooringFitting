@@ -170,21 +170,22 @@ namespace MooringFitting2026.Pipeline
     }
 
 
+    // [수정]
     private void RunStage(string stageName, Action action, InspectorOptions stageOptions = null)
     {
       Console.WriteLine($"================ {stageName} =================");
 
-      // 파이프라인 로직 수행
+      // 1. 파이프라인 로직 수행
       action();
 
-      // 전달받은 옵션이 있으면 그것을 쓰고, 없으면(null) 클래스 기본 옵션(_inspectOpt) 사용
+      // 2. 옵션 설정
       var optionsToUse = stageOptions ?? _inspectOpt;
 
-      // 검사 수행
-      StructuralSanityInspector.Inspect(_context, optionsToUse);
+      // 3. 검사 수행 및  자유단 노드 리스트 획득 
+      List<int> freeEndNodes = StructuralSanityInspector.Inspect(_context, optionsToUse);
 
-      // 결과 내보내기
-      BdfExporter.Export(_context, _csvPath, stageName);
+      // 4. 결과 내보내기 (SPC 리스트 전달)
+      BdfExporter.Export(_context, _csvPath, stageName, freeEndNodes);
     }
 
     private void ElementCollinearOverlapGroupRun(bool isDebug)
