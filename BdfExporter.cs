@@ -10,9 +10,12 @@ namespace MooringFitting2026.Exporters
 {
   public static class BdfExporter
   {
-    public static void Export(FeModelContext context, string CsvPath, string stageName)
+    // [수정] spcList 인자 추가 (기본값 null)
+    public static void Export(FeModelContext context, string CsvPath, string stageName, List<int> spcList = null)
     {
-      var bdfBuilder = new BdfBuilder(101, context);
+      // [수정] BdfBuilder 생성자에 spcList 전달
+      var bdfBuilder = new BdfBuilder(101, context, spcList);
+
       bdfBuilder.Run();
       string newBdfName = stageName + ".bdf";
       string BdfName = Path.Combine(CsvPath, newBdfName);
