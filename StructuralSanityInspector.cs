@@ -12,7 +12,7 @@ namespace MooringFitting2026.Inspector
     /// <summary>
     /// 모델 전체 검사를 수행하고 결과를 콘솔에 출력합니다.
     /// </summary>
-    public static void Inspect(FeModelContext context, InspectorOptions opt)
+    public static List<int> Inspect(FeModelContext context, InspectorOptions opt)
     {
       if (context is null) throw new ArgumentNullException(nameof(context));
       opt ??= new InspectorOptions(); // 방어 로직
@@ -22,12 +22,13 @@ namespace MooringFitting2026.Inspector
       if (opt.DebugMode) Console.WriteLine("  * Debug Mode: ON (Detailed Logs Enabled)");
       Console.WriteLine("--------------------------------------------------");
 
-      // [수정 핵심] 각 검사 단계 실행 전 if (opt.Check...) 확인 추가
+      // 위상학적 연결성 검사 (Topology) -> 자유단 노드 리스트 확보
+      List<int> freeEndNodes = new List<int>();
 
       // 1. 위상학적 연결성 검사 (Topology)
       if (opt.CheckTopology)
       {
-        InspectTopology(context, opt);
+        freeEndNodes = InspectTopology(context, opt);
       }
 
       // 2. 기하학적 형상 검사 (Geometry)
@@ -62,28 +63,22 @@ namespace MooringFitting2026.Inspector
 
       Console.WriteLine("--------------------------------------------------");
       Console.WriteLine("[Inspection Completed]\n");
+      return freeEndNodes;
     }
 
     // --------------------------------------------------------------------------
 
-    private static void InspectTopology(FeModelContext context, InspectorOptions opt)
+    private static List<int> InspectTopology(FeModelContext context, InspectorOptions opt)
     {
       // 01. Element 그룹 연결성 확인
       var connectedGroups = ElementConnectivityInspector.FindConnectedElementGroups(context.Elements);
-
-      if (connectedGroups.Count <= 1)
-      {
-        LogPass($"01 - Topology : Connected groups = {connectedGroups.Count}");
-      }
-      else
-      {
-        LogWarning($"01 - Topology : Disconnected groups = {connectedGroups.Count}");
-      }
+      if (connectedGroups.Count <= 1) LogPass($"01 - Topology : Connected groups = {connectedGroups.Count}");
+      else LogWarning($"01 - Topology : Disconnected groups = {connectedGroups.Count}");
 
       // 02. 노드 사용 빈도(Degree) 분석
       var nodeDegree = NodeDegreeInspector.BuildNodeDegree(context);
 
-      // A. 자유단 노드
+      // A. 자유단 노드 (Degree = 1) -> 이 리스트를 반환할 것임
       var endNodes = nodeDegree.Where(kv => kv.Value == 1).Select(kv => kv.Key).ToList();
       PrintNodeStat("02_A - 자유단 Node (1 conn)", endNodes, opt, isWarning: false);
 
@@ -95,10 +90,11 @@ namespace MooringFitting2026.Inspector
 
       PrintNodeStat("02_B - 미사용 Node (0 conn)", isolatedNodes, opt, isWarning: true);
 
-      // 고아 노드 제거 (자동 Cleanup)
+      // 고아 노드 제거
       int removedOrphans = RemoveOrphanNodesByElementConnection(context, isolatedNodes);
-      if (removedOrphans > 0)
-        Console.WriteLine($"      [Cleanup] Removed {removedOrphans} orphan nodes.");
+      if (removedOrphans > 0) Console.WriteLine($"      [Cleanup] Removed {removedOrphans} orphan nodes.");
+
+      return endNodes; // ★ 리스트 반환
     }
 
     private static void InspectGeometry(FeModelContext context, InspectorOptions opt)
