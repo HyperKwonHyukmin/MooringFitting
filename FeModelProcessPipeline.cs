@@ -25,6 +25,7 @@ namespace MooringFitting2026.Pipeline
     private readonly string _csvPath;
     private Dictionary<int, MooringFittingConnectionModifier.RigidInfo> _rigidMap
         = new Dictionary<int, MooringFittingConnectionModifier.RigidInfo>();
+    private List<ForceLoad> _forceLoads = new List<ForceLoad>();
 
     public FeModelProcessPipeline(FeModelContext context, RawStructureData rawStructureData,
       InspectorOptions inspectOpt, string CsvPath)
@@ -141,7 +142,7 @@ namespace MooringFitting2026.Pipeline
       // Stage 04 :임의 Element의 Node 1개가 다른 Element 선상에서 일정거리 떨어진 경우, 방향백터로 확장하여 붙이기       
       var optStage4 = new InspectorOptions
       {
-        DebugMode = true,         // 요약만 출력
+        DebugMode = false,         // 요약만 출력
         CheckTopology = false,
         CheckGeometry = false,
         CheckEquivalence = false,
@@ -204,8 +205,16 @@ namespace MooringFitting2026.Pipeline
         _rigidMap = MooringFittingConnectionModifier.Run(_context, _rawStructureData.MfList, Console.WriteLine);
       }, optStage6);
 
-
+      Console.WriteLine(">>> Generating Loads...");
+      _forceLoads = MooringFitting2026.Services.Load.MooringLoadGenerator.Generate(
+          _context,
+          _rawStructureData.MfList,
+          _rigidMap,
+          Console.WriteLine
+      );
     }
+
+
 
 
     private void RunStage(string stageName, Action action, InspectorOptions stageOptions = null)
@@ -216,8 +225,8 @@ namespace MooringFitting2026.Pipeline
       var optionsToUse = stageOptions ?? _inspectOpt;
       List<int> freeEndNodes = StructuralSanityInspector.Inspect(_context, optionsToUse);
 
-      // [수정] _rigidMap도 함께 Export에 전달
-      BdfExporter.Export(_context, _csvPath, stageName, freeEndNodes, _rigidMap);
+      // [수정] _forceLoads 전달
+      BdfExporter.Export(_context, _csvPath, stageName, freeEndNodes, _rigidMap, _forceLoads);
     }
 
     private void ElementCollinearOverlapGroupRun(bool isDebug)
