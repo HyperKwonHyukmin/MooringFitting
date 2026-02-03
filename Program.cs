@@ -1,11 +1,11 @@
 using MooringFitting2026.Debug;
+using MooringFitting2026.Inspector;
 using MooringFitting2026.Model;
 using MooringFitting2026.Model.Entities;
 using MooringFitting2026.Parsers;
-using MooringFitting2026.RawData;
-using MooringFitting2026.Inspector;
 using MooringFitting2026.Pipeline;
-
+using MooringFitting2026.RawData;
+using MooringFitting2026.Services.Initialization;
 using System;
 
 
@@ -28,23 +28,17 @@ namespace MooringFitting2026
       //string DataLoad = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part3\MooringFittingDataLoad_3414.csv";
 
 
+      // 본 코드 진행
       string CsvFolderPath = Path.GetDirectoryName(Data);
 
-      // 01. Structure 및 WinchLoad CSV 데이터 파싱
-      CsvRawDataParser csvParse = new CsvRawDataParser(Data, DataLoad, debugPrint:true);
-      (RawStructureData rawStructureData, WinchData winchData) = csvParse.Run();
-
-      // 02. 객체 초기화(깡통 데이터 클래스생성), rawContext에 FE 인스턴드 모두 들어감
-      FeModelContext feModelContext = FeModelContext.CreateEmpty();
-      RawFeModelBuilder rawFeModelBuilder = 
-        new RawFeModelBuilder(rawStructureData, feModelContext, debugPrint:false);
-      rawFeModelBuilder.Builder();
+      var (feModelContext, rawStructureData, winchData) =
+          FeModelLoader.LoadAndBuild(Data, DataLoad, debugMode: true);
 
 
       // 전처리 파이프라인 실행
       var opt = new InspectorOptions
       {
-        DebugMode = true,    
+        DebugMode = true,
         PrintAllNodeIds = true,
         ShortElementDistanceThreshold = 1,
         EquivalenceTolerance = 0.1,
