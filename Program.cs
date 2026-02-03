@@ -35,17 +35,40 @@ namespace MooringFitting2026
           FeModelLoader.LoadAndBuild(Data, DataLoad, debugMode: true);
 
 
-      // 전처리 파이프라인 실행
-      var opt = new InspectorOptions
-      {
-        DebugMode = true,
-        PrintAllNodeIds = true,
-        ShortElementDistanceThreshold = 1,
-        EquivalenceTolerance = 0.1,
-        NearNodeTolerance = 1
-      };
-      var feModelPreprocessPipeline = new FeModelProcessPipeline(feModelContext, rawStructureData, winchData, opt, CsvFolderPath);
-      feModelPreprocessPipeline.Run();
+      // [옵션 설정 가이드]
+      // .Create()로 시작하여 필요한 설정을 체이닝(Chaining) 하세요.
+      var globalOptions = InspectorOptions.Create()
+        .RunUntil(ProcessingStage.Stage01_CollinearOverlap) // Stage 1, 2, 3 실행
+
+        // [1] 디버깅 설정
+        .EnableDebug(printAllNodes: true)   // 상세 로그 켜기 (노드 ID 목록 포함)
+                                            // .DisableDebug()                  // (또는) 로그 끄기
+
+        // [2] 검사 범위 설정 (기본값은 모두 true)
+        .SetAllChecks(true)                 // 일단 다 켜고 시작 (추천)
+                                            // .SetAllChecks(false)             // (또는) 다 끄고 필요한 것만 켜기
+                                            // .WithTopology(false)             // 특정 검사만 끄기 가능
+                                            // .WithDuplicate(true)             // 특정 검사만 켜기 가능
+
+        // [3] 기준값(Threshold) 설정
+        .SetThresholds(
+            shortElemDist: 1.0,             // 요소 길이가 1.0 미만이면 경고
+            equivTol: 0.1                   // 0.1 거리 이내 점은 겹친 것으로 간주
+        )
+
+        .Build(); // [4] 최종 확정
+
+
+
+      // 파이프라인 생성 및 실행
+      var pipeline = new FeModelProcessPipeline(
+          feModelContext,
+          rawStructureData,
+          winchData,
+          globalOptions,  // ★ 공통 옵션 주입
+          CsvFolderPath
+      );
+      pipeline.Run();
     }
   }
 }
