@@ -6,6 +6,7 @@ using MooringFitting2026.Model.Entities;
 using MooringFitting2026.Modifier.ElementModifier;
 using MooringFitting2026.Modifier.NodeModifier;
 using MooringFitting2026.RawData;
+using MooringFitting2026.Services.Load;
 using MooringFitting2026.Services.SectionProperties;
 using MooringFitting2026.Utils.Geometry;
 using System;
@@ -21,6 +22,7 @@ namespace MooringFitting2026.Pipeline
   {
     private readonly FeModelContext _context;
     private readonly RawStructureData _rawStructureData;
+    private readonly WinchData _winchData;
     private readonly InspectorOptions _inspectOpt;
     private readonly string _csvPath;
     private Dictionary<int, MooringFittingConnectionModifier.RigidInfo> _rigidMap
@@ -28,10 +30,11 @@ namespace MooringFitting2026.Pipeline
     private List<ForceLoad> _forceLoads = new List<ForceLoad>();
 
     public FeModelProcessPipeline(FeModelContext context, RawStructureData rawStructureData,
-      InspectorOptions inspectOpt, string CsvPath)
+      WinchData winchData, InspectorOptions inspectOpt, string CsvPath)
     {
       _context = context ?? throw new ArgumentNullException(nameof(context));
       _rawStructureData = rawStructureData;
+      _winchData = winchData;
       _inspectOpt = inspectOpt ?? new InspectorOptions(); // 방어 로직
       _csvPath = CsvPath;
     }
@@ -196,22 +199,38 @@ namespace MooringFitting2026.Pipeline
       }, optStage5);
 
 
-      // Stage 06 : MF의 Rigid 연결
+      // Stage 06 : MF의 Rigid 연결 및 하중 생성
       var optStage6 = new InspectorOptions { DebugMode = true, CheckTopology = false };
 
       RunStage("STAGE_06", () =>
       {
-        // 리턴받은 딕셔너리를 멤버변수에 저장
+        // 1. Rigid 생성
         _rigidMap = MooringFittingConnectionModifier.Run(_context, _rawStructureData.MfList, Console.WriteLine);
-      }, optStage6);
 
-      Console.WriteLine(">>> Generating Loads...");
-      _forceLoads = MooringFitting2026.Services.Load.MooringLoadGenerator.Generate(
-          _context,
-          _rawStructureData.MfList,
-          _rigidMap,
-          Console.WriteLine
-      );
+        // 2. MF 하중 생성 (ID 2번부터 시작)
+        Console.WriteLine(">>> Generating Mooring Fitting Loads...");
+
+        // 시작 ID 지정 (Force ID는 2부터 시작)
+        int startLoadId = 2;
+
+        var mfLoads = MooringFitting2026.Services.Load.MooringLoadGenerator.Generate(
+            _context,
+            _rawStructureData.MfList,
+            _rigidMap,
+            Console.WriteLine,
+            startId: startLoadId
+        );
+
+        // 전체 하중 리스트에 추가
+        _forceLoads.AddRange(mfLoads);
+
+        // [Winch 확장 포인트]
+        // 나중에 Winch를 추가할 때, MF에서 사용한 마지막 ID 다음부터 시작하도록 계산 가능
+        // int nextStartId = (_forceLoads.Count > 0) ? _forceLoads.Max(f => f.LoadCaseID) + 1 : 2;
+        // var winchLoads = WinchLoadGenerator.Generate(..., startId: nextStartId);
+        // _forceLoads.AddRange(winchLoads);
+
+      }, optStage6);
     }
 
 
