@@ -8,6 +8,7 @@ using MooringFitting2026.Modifier.NodeModifier;
 using MooringFitting2026.RawData;
 using MooringFitting2026.Services.Load;
 using MooringFitting2026.Services.SectionProperties;
+using MooringFitting2026.Services.Solver;
 using MooringFitting2026.Utils.Geometry;
 using System;
 using System.Collections.Generic;
@@ -224,11 +225,20 @@ namespace MooringFitting2026.Pipeline
         // 전체 하중 리스트에 추가
         _forceLoads.AddRange(mfLoads);
 
-        // [Winch 확장 포인트]
-        // 나중에 Winch를 추가할 때, MF에서 사용한 마지막 ID 다음부터 시작하도록 계산 가능
-        // int nextStartId = (_forceLoads.Count > 0) ? _forceLoads.Max(f => f.LoadCaseID) + 1 : 2;
-        // var winchLoads = WinchLoadGenerator.Generate(..., startId: nextStartId);
-        // _forceLoads.AddRange(winchLoads);
+        // 3. [추가] Winch 하중 생성 (MF 다음 ID부터 시작)
+        // MF 하중이 하나도 없으면 2부터, 있으면 마지막 ID + 1 부터
+        int winchStartId = (_forceLoads.Count > 0)
+            ? _forceLoads.Max(f => f.LoadCaseID) + 1
+            : startLoadId;
+
+        var winchLoads = MooringFitting2026.Services.Load.WinchLoadGenerator.Generate(
+            _context,
+            _winchData,
+            Console.WriteLine,
+            startId: winchStartId
+        );
+
+        _forceLoads.AddRange(winchLoads);
 
       }, optStage6);
     }
@@ -246,6 +256,14 @@ namespace MooringFitting2026.Pipeline
 
       // [수정] _forceLoads 전달
       BdfExporter.Export(_context, _csvPath, stageName, freeEndNodes, _rigidMap, _forceLoads);
+
+      // STAGE_06(최종) 혹은 필요할 때만 돌리도록 조건 추가 가능
+      // 여기서는 STAGE_06일 때만 실행하는 예시입니다. 모든 스테이지 실행 원하면 if문 제거하세요.
+      if (stageName.Equals("STAGE_06", StringComparison.OrdinalIgnoreCase))
+      {
+        string bdfFullPath = Path.Combine(_csvPath, stageName + ".bdf");
+        NastranSolverService.RunNastran(bdfFullPath, Console.WriteLine);
+      }
     }
 
     private void ElementCollinearOverlapGroupRun(bool isDebug)
