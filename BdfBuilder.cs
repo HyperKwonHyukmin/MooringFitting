@@ -20,22 +20,25 @@ namespace MooringFitting2026.Exporters
     int LoadCase;
     public List<int> SpcList = new List<int>();
     public Dictionary<int, MooringFittingConnectionModifier.RigidInfo> RigidMap = null;
+    public List<ForceLoad> ForceLoads = new List<ForceLoad>();
 
     // BDF에 입력된 텍스트 라인모음 리스트
     public List<String> BdfLines = new List<String>();
 
     // 생성자 함수
     public BdfBuilder(
-          int Sol,
-          FeModelContext FeModelContext,
-          List<int> spcList = null,
-          Dictionary<int, MooringFittingConnectionModifier.RigidInfo> rigidMap = null, // 추가
-          int loadCase = 1)
+              int Sol,
+              FeModelContext FeModelContext,
+              List<int> spcList = null,
+              Dictionary<int, MooringFittingConnectionModifier.RigidInfo> rigidMap = null,
+              List<ForceLoad> forceLoads = null, // [추가] 인자
+              int loadCase = 1)
     {
       this.sol = Sol;
       this.feModelContext = FeModelContext;
       this.SpcList = spcList ?? new List<int>();
       this.RigidMap = rigidMap ?? new Dictionary<int, MooringFittingConnectionModifier.RigidInfo>();
+      this.ForceLoads = forceLoads ?? new List<ForceLoad>(); // [추가] 초기화
       this.LoadCase = loadCase;
     }
 
@@ -57,6 +60,8 @@ namespace MooringFitting2026.Exporters
 
       // 05. 경계 조건 데이터 입력
       BoundaryConditionSection();
+
+      LoadBulkSection();
 
     }
 
@@ -217,41 +222,53 @@ namespace MooringFitting2026.Exporters
         int eid = kv.Key;
         var info = kv.Value;
 
+        // Dependent Node가 없으면 RBE2 생성 불가하므로 스킵
+        if (info.DependentNodeIDs == null || info.DependentNodeIDs.Count == 0) continue;
+
         // -----------------------------------------------------------------------
-        // Nastran RBE2 Format (Small Field)
-        // RBE2, EID, GN, CM, GM1, GM2, GM3, GM4
-        // +   , GM5, GM6 ...
+        // Nastran RBE2 Format Logic (Small Field)
+        // Row 1: [RBE2][EID][GN][CM][GM1][GM2][GM3][GM4][GM5][+]
+        // Row 2: [+][GM6][GM7]...
         // -----------------------------------------------------------------------
 
-        // 첫 줄 헤더 작성: [RBE2][EID][GN(Independent)][CM(DOF)]
-        // CM(Degrees of Freedom)은 보통 123456 (전체 고정)
-        var line = $"{BdfFormatFields.FormatField("RBE2")}" +
-                   $"{BdfFormatFields.FormatField(eid, "right")}" +
-                   $"{BdfFormatFields.FormatField(info.IndependentNodeID, "right")}" +
-                   $"{BdfFormatFields.FormatField("123456", "right")}";
+        var sb = new StringBuilder();
 
-        // Dependent Nodes (GMi) 작성
-        // 한 줄에 8개 필드(헤더 제외하면 데이터는 4개 혹은 8개)가 들어가므로 줄바꿈 처리 필요
-        // 첫 줄에는 이미 4개 필드(키워드, EID, GN, CM)를 썼으므로 4개의 GM만 더 들어갈 수 있음
+        // 1. 첫 번째 줄 헤더 작성 (필드 1~4 사용)
+        sb.Append(BdfFormatFields.FormatField("RBE2"));
+        sb.Append(BdfFormatFields.FormatField(eid, "right"));
+        sb.Append(BdfFormatFields.FormatField(info.IndependentNodeID, "right"));
+        sb.Append(BdfFormatFields.FormatField("123456", "right")); // DOF 고정
 
-        int fieldCount = 4; // 현재 줄에 사용된 필드 수
+        // 현재 줄에서 사용된 필드 수 (1~4번 필드 사용됨)
+        int fieldsUsed = 4;
 
-        foreach (var depNode in info.DependentNodeIDs)
+        // 2. Dependent Nodes (GMi) 순회
+        for (int i = 0; i < info.DependentNodeIDs.Count; i++)
         {
-          // 줄이 꽉 찼으면(8칸 이상) Continuation Mark 찍고 다음 줄로
-          if (fieldCount >= 8)
+          int depNodeID = info.DependentNodeIDs[i];
+
+          // 필드 9번까지 꽉 찼다면 줄바꿈 처리 (필드 10은 연속 마크용)
+          if (fieldsUsed >= 9)
           {
-            BdfLines.Add(line + "+"); // 현재 줄 마무리
-            line = "+       ";        // 다음 줄 시작 (Continuation)
-            fieldCount = 1;           // Continuation 마크도 1개 필드 차지
+            sb.Append(BdfFormatFields.FormatField("+")); // 필드 10: Continuation Mark
+            BdfLines.Add(sb.ToString());
+
+            // StringBuilder 리셋 및 다음 줄 초기화
+            sb.Clear();
+            sb.Append(BdfFormatFields.FormatField("+")); // 다음 줄 필드 1: Continuation Mark Match
+            fieldsUsed = 1; // 필드 1 사용됨
           }
 
-          line += $"{BdfFormatFields.FormatField(depNode, "right")}";
-          fieldCount++;
+          // 노드 ID 추가
+          sb.Append(BdfFormatFields.FormatField(depNodeID, "right"));
+          fieldsUsed++;
         }
 
-        // 마지막 줄 추가
-        BdfLines.Add(line);
+        // 마지막 줄이 남아있다면 리스트에 추가
+        if (sb.Length > 0)
+        {
+          BdfLines.Add(sb.ToString());
+        }
       }
     }
 
@@ -278,6 +295,34 @@ namespace MooringFitting2026.Exporters
                        + $"{BdfFormatFields.FormatField(0.0, "right")}";      // Value
 
         BdfLines.Add(spcLine);
+      }
+    }
+
+    public void LoadBulkSection()
+    {
+      if (this.ForceLoads == null || this.ForceLoads.Count == 0) return;
+      Console.WriteLine("ForceLoads 시작");
+      foreach (var load in this.ForceLoads)
+      {
+        // FORCE Card Format:
+        // FORCE, SID, G, CID, F, N1, N2, N3
+        // SID: Load Case ID
+        // G: Grid ID
+        // CID: Coord System (0 = Basic)
+        // F: Scale Factor (1.0으로 두고 N1~N3에 실제 힘 성분 입력)
+        // N1, N2, N3: Vector components
+        Console.WriteLine($"ForceLoads: {load}");
+
+        string line = $"{BdfFormatFields.FormatField("FORCE")}" +
+                      $"{BdfFormatFields.FormatField(load.LoadCaseID, "right")}" +
+                      $"{BdfFormatFields.FormatField(load.NodeID, "right")}" +
+                      $"{BdfFormatFields.FormatField(0, "right")}" +     // CID=0
+                      $"{BdfFormatFields.FormatField(1.0, "right")}" +   // F=1.0 (Scale)
+                      $"{BdfFormatFields.FormatNastranField(load.Vector.X)}" +
+                      $"{BdfFormatFields.FormatNastranField(load.Vector.Y)}" +
+                      $"{BdfFormatFields.FormatNastranField(load.Vector.Z)}";
+
+        BdfLines.Add(line);
       }
     }
 
