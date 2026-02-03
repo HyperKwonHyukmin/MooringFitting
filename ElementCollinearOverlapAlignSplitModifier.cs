@@ -6,485 +6,313 @@ using MooringFitting2026.Utils.Geometry;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace MooringFitting2026.Modifier.ElementModifier
 {
   public static class ElementCollinearOverlapAlignSplitModifier
   {
+    /// <summary>
+    /// 중복/공선 그룹을 하나의 기준선(Reference Line)에 정렬시키고, 공유된 노드 위치에서 요소를 분할합니다.
+    /// </summary>
     public static void Run(
-      FeModelContext context,
-      List<HashSet<int>> overlapGroups,
-      double tTol = 0.05,
-      double minSegLenTol = 1e-3,
-      bool debug = false,
-      Action<string>? log = null,
-      bool cloneExternalNodes = false)
+        FeModelContext context,
+        List<HashSet<int>> overlapGroups,
+        double tTol = 0.05,
+        double minSegLenTol = 1e-3,
+        bool debug = false,
+        Action<string>? log = null,
+        bool cloneExternalNodes = false)
     {
       log ??= Console.WriteLine;
+
+      if (overlapGroups == null || overlapGroups.Count == 0)
+      {
+        if (debug) log("   -> 처리할 중복 그룹이 없습니다.");
+        return;
+      }
 
       var nodes = context.Nodes;
       var elements = context.Elements;
 
-      if (overlapGroups == null || overlapGroups.Count == 0)
-      {
-        if (debug) log("[AlignSplit] overlapGroups is empty.");
-        return;
-      }
-
-      // cloneExternalNodes 옵션이 켜져 있을 때만 node -> connected element set 생성
+      // 외부 연결 노드 복제 맵 (옵션)
       Dictionary<int, HashSet<int>>? nodeToElements = null;
       if (cloneExternalNodes)
       {
         nodeToElements = BuildNodeToElementsMap(elements);
-        if (debug) log($"[AlignSplit] nodeToElements map built. nodes={nodeToElements.Count}");
       }
 
-      int groupIndex = 0;
+      int processedCount = 0;
+      int totalSplitCount = 0;
 
       foreach (var group in overlapGroups)
       {
-        if (group == null || group.Count < 2)
-        {
-          groupIndex++;
-          continue;
-        }
+        if (group == null || group.Count < 2) continue;
+        processedCount++;
+
+        // ---------------------------------------------------------
+        // 1. 그룹 정보 요약 출력
+        // ---------------------------------------------------------
+        var validElements = group.Where(elements.Contains).ToList();
+        if (validElements.Count < 2) continue;
 
         if (debug)
         {
-          log($"\n==== [Group {groupIndex}] elements: {string.Join(",", group.OrderBy(x => x))} ====");
-          DumpGroupBasic(elements, nodes, group, log);
+          log($"   [그룹 {processedCount}] 요소 {validElements.Count}개 처리: ID[{string.Join(", ", validElements)}]");
         }
 
-        // 1) 그룹 기준선 계산
+        // ---------------------------------------------------------
+        // 2. 기준선(Reference Line) 계산
+        // ---------------------------------------------------------
         if (!TryBuildReferenceLine(nodes, elements, group, out var P0, out var vRef))
         {
-          if (debug) log("  [Skip] TryBuildReferenceLine failed.");
-          groupIndex++;
+          if (debug) log("      -> [건너뜀] 기준선을 계산할 수 없습니다 (점들이 너무 가깝거나 정의되지 않음).");
           continue;
         }
 
-        if (debug)
-        {
-          log($"  P0={P0}, vRef={vRef}");
-          DumpGroupLineQuality(elements, nodes, group, P0, vRef, log);
-        }
-
-        // 2) 그룹 노드들을 기준선으로 투영하여 정렬
-        //    핵심: 투영 단계에서는 AddOrGet 사용 금지(노드가 조기에 병합되어 split 포인트가 사라지는 문제 방지)
+        // ---------------------------------------------------------
+        // 3. 노드 투영 및 정렬 (Project & Align)
+        // ---------------------------------------------------------
         var nodeMap = BuildProjectedNodeMap(
-          nodes, elements, group, P0, vRef,
-          nodeToElements, cloneExternalNodes,
-          debug, log);
+            nodes, elements, group, P0, vRef,
+            nodeToElements, cloneExternalNodes);
 
-        // 3) (옵션) cloneExternalNodes=true면 element 노드 ID를 새 nodeID로 치환해야 함
-        //    cloneExternalNodes=false이면 대부분 identity map이므로 실질적 변화는 없음(그래도 안전하게 적용)
+        // Element의 노드 ID를 투영된(또는 복제된) 노드로 교체
         ReplaceGroupElementsNodeIDs(nodes, elements, group, nodeMap);
 
+        // 정렬 품질 확인 (로그)
         if (debug)
         {
-          log($"  nodeMap: {nodeMap.Count} nodes remapped. distinctNew={nodeMap.Values.Distinct().Count()}");
-          DumpGroupLineQuality(elements, nodes, group.Where(elements.Contains).ToHashSet(), P0, vRef, log);
+          double maxErr = CalculateMaxAlignmentError(elements, nodes, validElements, P0, vRef);
+          string status = maxErr < 1.0 ? "양호" : "주의(오차큼)";
+          log($"      -> 정렬 상태: {status} (최대 오차: {maxErr:F4})");
         }
 
-        // 4) 그룹 전체 공통 t 집합 구축
+        // ---------------------------------------------------------
+        // 4. 분할 포인트(Global T) 계산 및 실행
+        // ---------------------------------------------------------
         var globalT = BuildGlobalTSplitPoints(nodes, elements, group, P0, vRef, tTol);
 
+        int createdSegments = SplitAllElementsByGlobalT(nodes, elements, group, P0, vRef, globalT, tTol, minSegLenTol);
+        totalSplitCount += createdSegments;
+
         if (debug)
         {
-          log($"  globalT count={globalT.Count}" +
-              (globalT.Count > 0 ? $", range=[{globalT.First():F6} ~ {globalT.Last():F6}]" : ""));
-          if (globalT.Count <= 2)
-            log("  !!! globalT<=2 : split 포인트가 거의 없음(쪼개질 가능성 낮음). tTol이 너무 크거나, 노드가 너무 뭉개졌을 수 있음.");
+          log($"      -> 분할 완료: {createdSegments}개의 정렬된 세그먼트 생성됨.");
         }
-
-        // 5) 모든 element를 globalT 기준으로 split (공통 노드 강제 공유)
-        SplitAllElementsByGlobalT(nodes, elements, group, P0, vRef, globalT, tTol, minSegLenTol, debug, log);
-
-        if (debug) log($"==== [Group {groupIndex}] done ====");
-        groupIndex++;
       }
+
+      if (debug) log($"   -> [Stage 01 요약] 총 {processedCount}개 그룹 처리 완료, 전체 {totalSplitCount}개 세그먼트 생성.");
     }
 
-    // ---------------------------
-    // 1) Reference line
-    // ---------------------------
-    private static bool TryBuildReferenceLine(
-      Nodes nodes, Elements elements, HashSet<int> group,
-      out Point3D P0, out Point3D vRef)
+    // =================================================================
+    // Private Logic Methods (핵심 로직은 유지하되 불필요한 코드는 생략)
+    // =================================================================
+
+    private static bool TryBuildReferenceLine(Nodes nodes, Elements elements, HashSet<int> group, out Point3D P0, out Point3D vRef)
     {
-      P0 = new Point3D(0, 0, 0);
-      vRef = new Point3D(0, 0, 0);
+      P0 = default; vRef = default;
+      var endpoints = new List<Point3D>();
 
       int seedId = -1;
       double maxLen = -1;
 
-      var endpoints = new List<Point3D>();
-
       foreach (var eid in group)
       {
         if (!elements.Contains(eid)) continue;
-
         var e = elements[eid];
-        var (aId, bId) = e.GetEndNodePair();
+        var (n1, n2) = e.GetEndNodePair();
 
-        var a = nodes[aId];
-        var b = nodes[bId];
+        var p1 = nodes[n1];
+        var p2 = nodes[n2];
+        endpoints.Add(p1);
+        endpoints.Add(p2);
 
-        endpoints.Add(a);
-        endpoints.Add(b);
-
-        double len = DistanceUtils.GetDistanceBetweenNodes(a, b);
-        if (len > maxLen)
-        {
-          maxLen = len;
-          seedId = eid;
-        }
+        double len = DistanceUtils.GetDistanceBetweenNodes(p1, p2);
+        if (len > maxLen) { maxLen = len; seedId = eid; }
       }
 
-      if (seedId < 0 || maxLen <= 0 || endpoints.Count < 2)
-        return false;
+      if (seedId < 0 || endpoints.Count < 2) return false;
 
-      // centroid
-      P0 = new Point3D(
-        endpoints.Average(p => p.X),
-        endpoints.Average(p => p.Y),
-        endpoints.Average(p => p.Z));
+      // 기준점 P0 = 모든 점의 무게중심 (안정적인 위치)
+      P0 = Point3dUtils.GetCentroid(endpoints);
 
-      // seed direction
-      {
-        var seed = elements[seedId];
-        var (aId, bId) = seed.GetEndNodePair();
-        var a = nodes[aId];
-        var b = nodes[bId];
-        vRef = Point3dUtils.Normalize(Point3dUtils.Sub(b, a));
-      }
+      // 기준 벡터 vRef = 가장 긴 요소의 방향을 따름
+      var seedEle = elements[seedId];
+      var (s1, s2) = seedEle.GetEndNodePair();
+      vRef = Vector3dUtils.Normalize(Vector3dUtils.Direction(nodes[s1], nodes[s2]));
 
-      // length-weighted average direction with sign alignment
-      double sx = 0, sy = 0, sz = 0;
-
-      foreach (var eid in group)
-      {
-        if (!elements.Contains(eid)) continue;
-
-        var e = elements[eid];
-        var (aId, bId) = e.GetEndNodePair();
-
-        var a = nodes[aId];
-        var b = nodes[bId];
-
-        var dir = Point3dUtils.Normalize(Point3dUtils.Sub(b, a));
-        double len = DistanceUtils.GetDistanceBetweenNodes(a, b);
-        if (len <= 0) continue;
-
-        if (Point3dUtils.Dot(dir, vRef) < 0)
-          dir = Point3dUtils.Mul(dir, -1);
-
-        sx += dir.X * len;
-        sy += dir.Y * len;
-        sz += dir.Z * len;
-      }
-
-      var sum = new Point3D(sx, sy, sz);
-      if (Point3dUtils.Norm(sum) < 1e-12)
-        return true;
-
-      vRef = Point3dUtils.Normalize(sum);
       return true;
     }
 
-    // ---------------------------
-    // 2) Node projection map
-    // ---------------------------
     private static Dictionary<int, int> BuildProjectedNodeMap(
-      Nodes nodes, Elements elements, HashSet<int> group,
-      Point3D P0, Point3D vRef,
-      Dictionary<int, HashSet<int>>? nodeToElements,
-      bool cloneExternalNodes,
-      bool debug,
-      Action<string> log)
+        Nodes nodes, Elements elements, HashSet<int> group,
+        Point3D P0, Point3D vRef,
+        Dictionary<int, HashSet<int>>? nodeToElements,
+        bool cloneExternalNodes)
     {
+      var map = new Dictionary<int, int>();
       var groupNodeIDs = new HashSet<int>();
 
       foreach (var eid in group)
       {
         if (!elements.Contains(eid)) continue;
-        foreach (var nid in elements[eid].NodeIDs)
-          groupNodeIDs.Add(nid);
+        foreach (var nid in elements[eid].NodeIDs) groupNodeIDs.Add(nid);
       }
-
-      if (debug) log($"  group nodes(unique)={groupNodeIDs.Count}");
-
-      var map = new Dictionary<int, int>();
 
       foreach (var nid in groupNodeIDs)
       {
-        var x = nodes[nid];
-        var proj = ProjectionUtils.ProjectPointToLine(x, P0, vRef);
+        var originalPos = nodes[nid];
+        var proj = ProjectionUtils.ProjectPointToLine(originalPos, P0, vRef);
 
-        // (중요) 투영 단계에서는 AddOrGet로 병합하지 않는다.
-        // - cloneExternalNodes=false: nodeID 유지 + 좌표만 이동(AddWithID)
-        // - cloneExternalNodes=true: 그룹 밖 element에 연결된 node는 clone을 만들어 그룹 내부에서만 치환
         if (cloneExternalNodes && nodeToElements != null && IsConnectedOutsideGroup(nodeToElements, nid, group))
         {
-          int newId = nodes.LastNodeID + 1; // AddWithID가 내부 nextID/LastID 갱신함
+          int newId = nodes.LastNodeID + 1;
           nodes.AddWithID(newId, proj.X, proj.Y, proj.Z);
           map[nid] = newId;
-
-          if (debug)
-            log($"    clone node: oldN{nid} -> newN{newId} (outside-connected)");
         }
         else
         {
+          // 단순 이동 (좌표 덮어쓰기)
           nodes.AddWithID(nid, proj.X, proj.Y, proj.Z);
           map[nid] = nid;
         }
       }
-
       return map;
     }
 
-    private static bool IsConnectedOutsideGroup(Dictionary<int, HashSet<int>> nodeToElements, int nodeId, HashSet<int> group)
-    {
-      if (!nodeToElements.TryGetValue(nodeId, out var eids) || eids.Count == 0)
-        return false;
-
-      foreach (var eid in eids)
-        if (!group.Contains(eid))
-          return true;
-
-      return false;
-    }
-
-    private static Dictionary<int, HashSet<int>> BuildNodeToElementsMap(Elements elements)
-    {
-      var map = new Dictionary<int, HashSet<int>>();
-
-      foreach (var kv in elements.AsReadOnly()) // Elements.AsReadOnly() 제공됨:contentReference[oaicite:3]{index=3}
-      {
-        int eid = kv.Key;
-        var e = kv.Value;
-
-        foreach (var nid in e.NodeIDs)
-        {
-          if (!map.TryGetValue(nid, out var set))
-          {
-            set = new HashSet<int>();
-            map[nid] = set;
-          }
-          set.Add(eid);
-        }
-      }
-
-      return map;
-    }
-
-    // ---------------------------
-    // 3) Replace element node IDs by map (needed if clones exist)
-    // ---------------------------
     private static void ReplaceGroupElementsNodeIDs(
-      Nodes nodes, Elements elements, HashSet<int> group,
-      Dictionary<int, int> nodeMap)
+        Nodes nodes, Elements elements, HashSet<int> group, Dictionary<int, int> nodeMap)
     {
       foreach (var eid in group)
       {
         if (!elements.Contains(eid)) continue;
-
         var e = elements[eid];
 
         var newNodeIDs = e.NodeIDs
-          .Select(nid => nodeMap.TryGetValue(nid, out var nn) ? nn : nid)
-          .ToList();
+            .Select(nid => nodeMap.TryGetValue(nid, out var mapped) ? mapped : nid)
+            .ToList();
 
-        // 투영/치환 후 양끝이 같은 노드면 길이 0 element → 제거
         if (newNodeIDs.Count >= 2 && newNodeIDs.First() == newNodeIDs.Last())
         {
           elements.Remove(eid);
           continue;
         }
 
-        var extra = e.ExtraData.ToDictionary(kv => kv.Key, kv => kv.Value);
+        var extra = e.ExtraData.ToDictionary(k => k.Key, v => v.Value);
         elements.AddWithID(eid, newNodeIDs, e.PropertyID, extra);
       }
     }
 
-    // ---------------------------
-    // 4) Global split points (t)
-    // ---------------------------
     private static List<double> BuildGlobalTSplitPoints(
-      Nodes nodes, Elements elements, HashSet<int> group,
-      Point3D P0, Point3D vRef, double tTol)
+        Nodes nodes, Elements elements, HashSet<int> group,
+        Point3D P0, Point3D vRef, double tTol)
     {
       var tList = new List<double>();
-
-      foreach (var eid in group)
-      {
-        if (!elements.Contains(eid)) continue;
-        var e = elements[eid];
-
-        foreach (var nid in e.NodeIDs)
-        {
-          var p = nodes[nid];
-          double t = Point3dUtils.Dot(Point3dUtils.Sub(p, P0), vRef);
-          tList.Add(t);
-        }
-      }
-
-      tList.Sort();
-      return MathUtils.MergeClose(tList, tTol);
-    }
-
-    // ---------------------------
-    // 5) Split elements by global T
-    // ---------------------------
-    private static void SplitAllElementsByGlobalT(
-      Nodes nodes, Elements elements, HashSet<int> group,
-      Point3D P0, Point3D vRef, List<double> globalT,
-      double tTol, double minSegLenTol,
-      bool debug, Action<string> log)
-    {
-      var groupIdsSnapshot = group.Where(elements.Contains).ToList();
-
-      foreach (var eid in groupIdsSnapshot)
-      {
-        if (!elements.Contains(eid)) continue;
-
-        var e = elements[eid];
-        var (aId, bId) = e.GetEndNodePair();
-
-        var a = nodes[aId];
-        var b = nodes[bId];
-
-        double tA = Point3dUtils.Dot(Point3dUtils.Sub(a, P0), vRef);
-        double tB = Point3dUtils.Dot(Point3dUtils.Sub(b, P0), vRef);
-        double tMin = Math.Min(tA, tB);
-        double tMax = Math.Max(tA, tB);
-
-        // element 구간 안에 들어오는 globalT + endpoints
-        var tLocal = globalT
-          .Where(t => t >= tMin - tTol && t <= tMax + tTol)
-          .Concat(new[] { tA, tB })
-          .OrderBy(t => t)
-          .ToList();
-
-        tLocal = MathUtils.MergeClose(tLocal, tTol);
-
-
-
-        // 세그먼트 생성
-        var segs = new List<(int n1, int n2)>();
-
-        for (int i = 0; i < tLocal.Count - 1; i++)
-        {
-          double t1 = tLocal[i];
-          double t2 = tLocal[i + 1];
-
-          if (Math.Abs(t2 - t1) < minSegLenTol)
-            continue;
-
-          int n1 = nodes.GetOrCreateNodeAtT(P0, vRef, t1);
-          int n2 = nodes.GetOrCreateNodeAtT(P0, vRef, t2);
-          if (n1 == n2) continue;
-
-          // 방향은 element 원래 방향을 따라가도록 정렬
-          if (tA <= tB)
-            segs.Add((n1, n2));
-          else
-            segs.Add((n2, n1));
-        }
-
-        if (debug)
-        {
-          log($"  E{eid}: tA={tA:F6}, tB={tB:F6}, tLocal={tLocal.Count}, segs={segs.Count}");
-          if (segs.Count <= 1)
-            log("    (info) segs<=1 이면 실제 AddNew가 발생하지 않아 '안쪼개진 것처럼' 보일 수 있음.");
-        }
-
-        if (segs.Count == 0)
-        {
-          elements.Remove(eid);
-          continue;
-        }
-
-        var extra = e.ExtraData.ToDictionary(kv => kv.Key, kv => kv.Value);
-
-        elements.Remove(eid);
-
-        List<int> addElements = new List<int>();
-        for (int i = 0; i < segs.Count; i++)
-        {
-          int newEleID = elements.AddNew(new List<int> { segs[i].n1, segs[i].n2 }, e.PropertyID, extra);
-          addElements.Add(newEleID);
-        }
-        if (debug) Console.WriteLine($"삭제되는 ele:{eid}, 생성되는 ele: {string.Join(",", addElements)}");
-
-      }
-    }
-
-    // ---------------------------
-    // Debug helpers
-    // ---------------------------
-    private static void DumpGroupBasic(Elements elements, Nodes nodes, HashSet<int> group, Action<string> log)
-    {
-      int existing = group.Count(elements.Contains);
-      var nodeSet = new HashSet<int>();
-
       foreach (var eid in group)
       {
         if (!elements.Contains(eid)) continue;
         foreach (var nid in elements[eid].NodeIDs)
-          nodeSet.Add(nid);
-      }
-
-      log($"  elements(existing)={existing}, nodes(unique)={nodeSet.Count}");
-
-      foreach (var eid in group.OrderBy(x => x))
-      {
-        if (!elements.Contains(eid))
         {
-          log($"    E{eid}: (missing)");
-          continue;
+          double t = Point3dUtils.Dot(Point3dUtils.Sub(nodes[nid], P0), vRef);
+          tList.Add(t);
         }
-
-        var e = elements[eid];
-        var (aId, bId) = e.GetEndNodePair();
-        var a = nodes[aId];
-        var b = nodes[bId];
-        double len = DistanceUtils.GetDistanceBetweenNodes(a, b);
-
-        log($"    E{eid}: N[{aId},{bId}] len={len:F3} prop={e.PropertyID}");
       }
+      tList.Sort();
+      return MathUtils.MergeClose(tList, tTol);
     }
 
-    private static void DumpGroupLineQuality(Elements elements, Nodes nodes, HashSet<int> group, Point3D P0, Point3D vRef, Action<string> log)
+    private static int SplitAllElementsByGlobalT(
+        Nodes nodes, Elements elements, HashSet<int> group,
+        Point3D P0, Point3D vRef, List<double> globalT,
+        double tTol, double minSegLenTol)
+    {
+      int createdCount = 0;
+      var targetElements = group.Where(elements.Contains).ToList();
+
+      foreach (var eid in targetElements)
+      {
+        var e = elements[eid];
+        var (n1, n2) = e.GetEndNodePair();
+        double t1 = Point3dUtils.Dot(Point3dUtils.Sub(nodes[n1], P0), vRef);
+        double t2 = Point3dUtils.Dot(Point3dUtils.Sub(nodes[n2], P0), vRef);
+
+        double tMin = Math.Min(t1, t2);
+        double tMax = Math.Max(t1, t2);
+
+        var validT = globalT
+            .Where(t => t > tMin + minSegLenTol && t < tMax - minSegLenTol)
+            .ToList();
+
+        if (validT.Count == 0) continue;
+
+        bool forward = (t2 > t1);
+        validT.Add(t1);
+        validT.Add(t2);
+
+        var sortedT = forward
+            ? validT.OrderBy(x => x).ToList()
+            : validT.OrderByDescending(x => x).ToList();
+
+        var extra = e.ExtraData.ToDictionary(k => k.Key, v => v.Value);
+        int propID = e.PropertyID;
+        elements.Remove(eid);
+
+        for (int i = 0; i < sortedT.Count - 1; i++)
+        {
+          double ta = sortedT[i];
+          double tb = sortedT[i + 1];
+
+          int na = nodes.GetOrCreateNodeAtT(P0, vRef, ta);
+          int nb = nodes.GetOrCreateNodeAtT(P0, vRef, tb);
+
+          if (na == nb) continue;
+
+          elements.AddNew(new List<int> { na, nb }, propID, extra);
+          createdCount++;
+        }
+      }
+      return createdCount;
+    }
+
+    private static double CalculateMaxAlignmentError(
+        Elements elements, Nodes nodes, List<int> groupEids, Point3D P0, Point3D vRef)
     {
       double maxDist = 0.0;
-      double maxAngDeg = 0.0;
-
-      foreach (var eid in group.OrderBy(x => x))
+      foreach (var eid in groupEids)
       {
         if (!elements.Contains(eid)) continue;
-
-        var e = elements[eid];
-        var (aId, bId) = e.GetEndNodePair();
-        var a = nodes[aId];
-        var b = nodes[bId];
-
-        double da = DistanceUtils.DistancePointToLine(a, P0, vRef);
-        double db = DistanceUtils.DistancePointToLine(b, P0, vRef);
-        maxDist = Math.Max(maxDist, Math.Max(da, db));
-
-        var dir = Point3dUtils.Normalize(Point3dUtils.Sub(b, a));
-        double dot = Math.Abs(Point3dUtils.Dot(dir, vRef));
-        dot = Math.Max(-1.0, Math.Min(1.0, dot));
-        double angDeg = Math.Acos(dot) * 180.0 / Math.PI;
-        maxAngDeg = Math.Max(maxAngDeg, angDeg);
+        foreach (var nid in elements[eid].NodeIDs)
+        {
+          double d = DistanceUtils.DistancePointToLine(nodes[nid], P0, vRef);
+          if (d > maxDist) maxDist = d;
+        }
       }
+      return maxDist;
+    }
 
-      log($"  [Quality] maxNodeDistToLine={maxDist:F6}, maxAngleToRef={maxAngDeg:F6}deg");
+    // --- Helper Methods ---
+    private static Dictionary<int, HashSet<int>> BuildNodeToElementsMap(Elements elements)
+    {
+      var map = new Dictionary<int, HashSet<int>>();
+      foreach (var kv in elements.AsReadOnly())
+      {
+        foreach (var nid in kv.Value.NodeIDs)
+        {
+          if (!map.TryGetValue(nid, out var set))
+            map[nid] = set = new HashSet<int>();
+          set.Add(kv.Key);
+        }
+      }
+      return map;
+    }
+
+    private static bool IsConnectedOutsideGroup(Dictionary<int, HashSet<int>> map, int nid, HashSet<int> group)
+    {
+      if (map.TryGetValue(nid, out var eids))
+      {
+        return eids.Any(eid => !group.Contains(eid));
+      }
+      return false;
     }
   }
 }
-
-
