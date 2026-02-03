@@ -32,13 +32,16 @@ namespace MooringFitting2026
       string CsvFolderPath = Path.GetDirectoryName(Data);
 
       var (feModelContext, rawStructureData, winchData) =
-          FeModelLoader.LoadAndBuild(Data, DataLoad, debugMode: true);
+          FeModelLoader.LoadAndBuild(Data, DataLoad, debugMode: false);
 
 
       // [옵션 설정 가이드]
       // .Create()로 시작하여 필요한 설정을 체이닝(Chaining) 하세요.
       var globalOptions = InspectorOptions.Create()
-        .RunUntil(ProcessingStage.Stage01_CollinearOverlap) // Stage 1, 2, 3 실행
+        .RunUntil(ProcessingStage.Stage01_CollinearOverlap) // 여기서 실행 단계 지정
+        // 실행 STAGE 지정 목록
+        //Stage01_CollinearOverlap | Stage02_SplitByNodes | Stage03_IntersectionSplit |
+        //Stage03_5_DuplicateMerge | Stage04_Extension | Stage05_MeshRefinement | Stage06_LoadGeneration
 
         // [1] 디버깅 설정
         .EnableDebug(printAllNodes: true)   // 상세 로그 켜기 (노드 ID 목록 포함)
