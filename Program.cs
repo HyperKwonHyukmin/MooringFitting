@@ -50,9 +50,8 @@ namespace MooringFitting2026
         EquivalenceTolerance = 0.1,
         NearNodeTolerance = 1
       };
-      var feModelPreprocessPipeline = new FeModelProcessPipeline(feModelContext, rawStructureData, opt, CsvFolderPath);
+      var feModelPreprocessPipeline = new FeModelProcessPipeline(feModelContext, rawStructureData, winchData, opt, CsvFolderPath);
       feModelPreprocessPipeline.Run();
-
     }
   }
 }
