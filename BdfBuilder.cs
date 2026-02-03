@@ -2,6 +2,7 @@ using MooringFitting.Exporters;
 using MooringFitting2026.Exporters;
 using MooringFitting2026.Inspector;
 using MooringFitting2026.Model.Entities;
+using MooringFitting2026.Modifier.ElementModifier;
 using MooringFitting2026.Utils;
 using System;
 using System.Collections.Generic;
@@ -18,17 +19,23 @@ namespace MooringFitting2026.Exporters
     public FeModelContext feModelContext;
     int LoadCase;
     public List<int> SpcList = new List<int>();
+    public Dictionary<int, MooringFittingConnectionModifier.RigidInfo> RigidMap = null;
 
     // BDF에 입력된 텍스트 라인모음 리스트
     public List<String> BdfLines = new List<String>();
 
     // 생성자 함수
     public BdfBuilder(
-      int Sol, FeModelContext FeModelContext, List<int> spcList, int loadCase = 1)
+          int Sol,
+          FeModelContext FeModelContext,
+          List<int> spcList = null,
+          Dictionary<int, MooringFittingConnectionModifier.RigidInfo> rigidMap = null, // 추가
+          int loadCase = 1)
     {
       this.sol = Sol;
       this.feModelContext = FeModelContext;
-      this.SpcList = spcList;
+      this.SpcList = spcList ?? new List<int>();
+      this.RigidMap = rigidMap ?? new Dictionary<int, MooringFittingConnectionModifier.RigidInfo>();
       this.LoadCase = loadCase;
     }
 
@@ -45,6 +52,8 @@ namespace MooringFitting2026.Exporters
 
       // 04. Property, Material 데이터 입력
       PropertyMaterialSection();
+
+      RigidElementSection();
 
       // 05. 경계 조건 데이터 입력
       BoundaryConditionSection();
@@ -196,6 +205,53 @@ namespace MooringFitting2026.Exporters
             + $"{BdfFormatFields.FormatField(material.Value.Rho, "right", true)}";
 
         BdfLines.Add(materialText);
+      }
+    }
+
+    public void RigidElementSection()
+    {
+      if (this.RigidMap == null || this.RigidMap.Count == 0) return;
+
+      foreach (var kv in this.RigidMap)
+      {
+        int eid = kv.Key;
+        var info = kv.Value;
+
+        // -----------------------------------------------------------------------
+        // Nastran RBE2 Format (Small Field)
+        // RBE2, EID, GN, CM, GM1, GM2, GM3, GM4
+        // +   , GM5, GM6 ...
+        // -----------------------------------------------------------------------
+
+        // 첫 줄 헤더 작성: [RBE2][EID][GN(Independent)][CM(DOF)]
+        // CM(Degrees of Freedom)은 보통 123456 (전체 고정)
+        var line = $"{BdfFormatFields.FormatField("RBE2")}" +
+                   $"{BdfFormatFields.FormatField(eid, "right")}" +
+                   $"{BdfFormatFields.FormatField(info.IndependentNodeID, "right")}" +
+                   $"{BdfFormatFields.FormatField("123456", "right")}";
+
+        // Dependent Nodes (GMi) 작성
+        // 한 줄에 8개 필드(헤더 제외하면 데이터는 4개 혹은 8개)가 들어가므로 줄바꿈 처리 필요
+        // 첫 줄에는 이미 4개 필드(키워드, EID, GN, CM)를 썼으므로 4개의 GM만 더 들어갈 수 있음
+
+        int fieldCount = 4; // 현재 줄에 사용된 필드 수
+
+        foreach (var depNode in info.DependentNodeIDs)
+        {
+          // 줄이 꽉 찼으면(8칸 이상) Continuation Mark 찍고 다음 줄로
+          if (fieldCount >= 8)
+          {
+            BdfLines.Add(line + "+"); // 현재 줄 마무리
+            line = "+       ";        // 다음 줄 시작 (Continuation)
+            fieldCount = 1;           // Continuation 마크도 1개 필드 차지
+          }
+
+          line += $"{BdfFormatFields.FormatField(depNode, "right")}";
+          fieldCount++;
+        }
+
+        // 마지막 줄 추가
+        BdfLines.Add(line);
       }
     }
 
