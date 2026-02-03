@@ -1,7 +1,6 @@
 using MooringFitting2026.Exporters;
 using MooringFitting2026.Inspector;
 using MooringFitting2026.Inspector.ElementInspector;
-using MooringFitting2026.Model;
 using MooringFitting2026.Model.Entities;
 using MooringFitting2026.Modifier.ElementModifier;
 using MooringFitting2026.Modifier.NodeModifier;
@@ -12,10 +11,8 @@ using MooringFitting2026.Services.Solver;
 using MooringFitting2026.Utils.Geometry;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using System.Xml.Linq;
 
 namespace MooringFitting2026.Pipeline
 {
@@ -24,19 +21,25 @@ namespace MooringFitting2026.Pipeline
     private readonly FeModelContext _context;
     private readonly RawStructureData _rawStructureData;
     private readonly WinchData _winchData;
-    private readonly InspectorOptions _inspectOpt;
+    private readonly InspectorOptions _inspectOpt; // 전역 공통 설정
     private readonly string _csvPath;
+
+    // 파이프라인 상태 저장용
     private Dictionary<int, MooringFittingConnectionModifier.RigidInfo> _rigidMap
         = new Dictionary<int, MooringFittingConnectionModifier.RigidInfo>();
     private List<ForceLoad> _forceLoads = new List<ForceLoad>();
 
-    public FeModelProcessPipeline(FeModelContext context, RawStructureData rawStructureData,
-      WinchData winchData, InspectorOptions inspectOpt, string CsvPath)
+    public FeModelProcessPipeline(
+        FeModelContext context,
+        RawStructureData rawStructureData,
+        WinchData winchData,
+        InspectorOptions inspectOpt,
+        string CsvPath)
     {
       _context = context ?? throw new ArgumentNullException(nameof(context));
       _rawStructureData = rawStructureData;
       _winchData = winchData;
-      _inspectOpt = inspectOpt ?? new InspectorOptions(); // 방어 로직
+      _inspectOpt = inspectOpt ?? InspectorOptions.Default; // Null일 경우 기본값 사용
       _csvPath = CsvPath;
     }
 
@@ -44,12 +47,13 @@ namespace MooringFitting2026.Pipeline
     {
       Console.WriteLine("\n[Pipeline Started] Processing FE Model...");
 
-      // Z방향 절대좌표 통일하기. 
+      // Z방향 절대좌표 통일하기 (전처리)
       NodeZPlaneNormalizeModifier.Run(_context);
 
-      // STAGE_00 : 원본 CSV 그대로 FE Model 출력
+      // STAGE_00 : 원본 상태 Export
       ExportBaseline();
 
+      // 전체 파이프라인 순차 실행
       RunStagedPipeline();
     }
 
@@ -57,232 +61,149 @@ namespace MooringFitting2026.Pipeline
     {
       string stageName = "STAGE_00";
       Console.WriteLine($"================ {stageName} =================");
-      var optStage0 = new InspectorOptions
-      {
-        DebugMode = false,         // 요약만 출력
-        CheckTopology = false,      // 기본 연결성 확인
-        CheckGeometry = false,     // (이미 검증되었다면 생략 가능)
-        CheckEquivalence = false,  // (오래 걸릴 수 있음)
-        CheckDuplicate = false,     // 치명적이므로 유지
-        CheckIntegrity = false,
-        CheckIsolation = false
-      };
-      StructuralSanityInspector.Inspect(_context, optStage0);
-      BdfExporter.Export(_context, _csvPath, stageName);
 
+      // 전역 옵션으로 검사 수행
+      var freeEndNodes = StructuralSanityInspector.Inspect(_context, _inspectOpt);
+
+      // 초기 Export (하중 없음)
+      BdfExporter.Export(_context, _csvPath, stageName, freeEndNodes);
     }
 
     private void RunStagedPipeline()
     {
-
-      // Stage 01 : 미세하게 틀어지며 겹치는 Element의 경우 동일한 벡터로 element 각 수정하고 겹치는 Node 기준 모두 쪼개기
-      var optStage1 = new InspectorOptions
-      {
-        DebugMode = false,         // 요약만 출력
-        CheckTopology = false,      // 기본 연결성 확인
-        CheckGeometry = false,     // (이미 검증되었다면 생략 가능)
-        CheckEquivalence = false,  // (오래 걸릴 수 있음)
-        CheckDuplicate = false,     // 치명적이므로 유지
-        CheckIntegrity = false,
-        CheckIsolation = false
-      };
+      // Stage 01 : 미세하게 틀어지며 겹치는 Element 처리
       RunStage("STAGE_01", () =>
       {
-        ElementCollinearOverlapGroupRun(optStage1.DebugMode);
-      }, optStage1); // RunStage가 opt를 받도록 수정 필요
+        ElementCollinearOverlapGroupRun(_inspectOpt.DebugMode);
+      });
 
-
-      // Stage 02 : Element 선상에 존재하는 Node 기준으로 Element 모두 쪼개기 
-      var optStage2 = new InspectorOptions
-      {
-        DebugMode = false,         // 요약만 출력
-        CheckTopology = false,      // 기본 연결성 확인
-        CheckGeometry = false,     // (이미 검증되었다면 생략 가능)
-        CheckEquivalence = false,  // (오래 걸릴 수 있음)
-        CheckDuplicate = false,     // 치명적이므로 유지
-        CheckIntegrity = false,
-        CheckIsolation = false
-      };
+      // Stage 02 : Element 선상에 존재하는 Node 기준으로 쪼개기 
       RunStage("STAGE_02", () =>
       {
-        ElementSplitByExistingNodesRun(optStage2.DebugMode);
-      }, optStage2);
+        ElementSplitByExistingNodesRun(_inspectOpt.DebugMode);
+      });
 
-
-      // Stage 03 : Element 끼리 서로 교차하는 교점을 Node를 만들어, 그 Node 기준 Element 쪼개기 
-      var optStage3 = new InspectorOptions
-      {
-        DebugMode = false,         // 요약만 출력
-        CheckTopology = false,      // 기본 연결성 확인
-        CheckGeometry = false,     // (이미 검증되었다면 생략 가능)
-        CheckEquivalence = false,  // (오래 걸릴 수 있음)
-        CheckDuplicate = false,     // 치명적이므로 유지
-        CheckIntegrity = false,
-        CheckIsolation = false
-      };
+      // Stage 03 : Element 교차점 생성 및 쪼개기 
       RunStage("STAGE_03", () =>
       {
-        ElementIntersectionSplitRun(optStage3.DebugMode);
-      }, optStage3);
+        ElementIntersectionSplitRun(_inspectOpt.DebugMode);
+      });
 
-
-      // Stage 03.5 : Duplicate 되어 있는 부재들의 등가 Property 계산하여 Element 1개로 치환
-      var optStage3_5 = new InspectorOptions
-      {
-        DebugMode = false,         // 요약만 출력
-        CheckTopology = false,      // 기본 연결성 확인
-        CheckGeometry = false,     // (이미 검증되었다면 생략 가능)
-        CheckEquivalence = false,  // (오래 걸릴 수 있음)
-        CheckDuplicate = false,     // 치명적이므로 유지
-        CheckIntegrity = false,
-        CheckIsolation = false
-      };
+      // Stage 03.5 : 중복 부재 등가 Property 계산 및 병합
       RunStage("STAGE_03_5", () =>
       {
-        ElementDuplicateMergeRun(optStage3_5.DebugMode);
-      }, optStage3_5);
+        ElementDuplicateMergeRun(_inspectOpt.DebugMode);
+      });
 
-
-      // Stage 04 :임의 Element의 Node 1개가 다른 Element 선상에서 일정거리 떨어진 경우, 방향백터로 확장하여 붙이기       
-      var optStage4 = new InspectorOptions
-      {
-        DebugMode = false,         // 요약만 출력
-        CheckTopology = false,
-        CheckGeometry = false,
-        CheckEquivalence = false,
-        CheckDuplicate = true,
-        CheckIntegrity = false,
-        CheckIsolation = false
-      };
-
+      // Stage 04 : 자유단 노드 연장 및 연결
       RunStage("STAGE_04", () =>
       {
         var extendOpt = new ElementExtendToBBoxIntersectAndSplitModifier.Options
         {
-          SearchRatio = 1.2,        // 2.0 -> 5.0 (비율 증가)
-          DefaultSearchDist = 50.0, // 기본 거리
+          SearchRatio = 1.2,
+          DefaultSearchDist = 50.0,
           IntersectionTolerance = 1.0,
           GridCellSize = 50.0,
-
-          Debug = true,
-          // ★ [진단] 의심되는 노드 번호를 여기에 넣으세요!
-          //WatchNodeIDs = new HashSet<int> { 185 } // 예: 142번 노드 감시
+          Debug = _inspectOpt.DebugMode, // 전역 디버그 설정 연동
+                                         // WatchNodeIDs = new HashSet<int> { } // 필요시 특정 노드 감시
         };
 
         var result = ElementExtendToBBoxIntersectAndSplitModifier.Run(_context, extendOpt, Console.WriteLine);
         Console.WriteLine($"[Stage 04] Extended: {result.SuccessConnections} elements.");
+      });
 
-      }, optStage4);
-
-
-      // Stage 05 : Mesh 쪼개기 작업     
-      var optStage5 = new InspectorOptions
-      {
-        DebugMode = false,       
-        CheckTopology = false,
-        CheckGeometry = false,
-        CheckEquivalence = false,
-        CheckDuplicate = false,
-        CheckIntegrity = false,
-        CheckIsolation = false
-      };
+      // Stage 05 : Mesh Refinement
       RunStage("STAGE_05", () =>
       {
         var meshOpt = new ElementMeshRefinementModifier.Options
         {
-          TargetMeshSize = 500.0, // 원하는 메쉬 간격 
-          Debug = true
+          TargetMeshSize = 500.0,
+          Debug = _inspectOpt.DebugMode
         };
 
+        // [수정] _rawStructureData 인자 제거 -> (context, opt, log) 3개 전달
         int count = ElementMeshRefinementModifier.Run(_context, meshOpt, Console.WriteLine);
         Console.WriteLine($"[Stage 05] Meshing Completed. {count} elements refined.");
+      });
 
-      }, optStage5);
-
-
-      // Stage 06 : MF의 Rigid 연결 및 하중 생성
-      var optStage6 = new InspectorOptions { DebugMode = true, CheckTopology = false };
-
+      // Stage 06 : MF Rigid 연결 및 하중 생성 (최종 단계)
       RunStage("STAGE_06", () =>
       {
         // 1. Rigid 생성
         _rigidMap = MooringFittingConnectionModifier.Run(_context, _rawStructureData.MfList, Console.WriteLine);
 
-        // 2. MF 하중 생성 (ID 2번부터 시작)
+        // 2. MF 하중 생성
         Console.WriteLine(">>> Generating Mooring Fitting Loads...");
+        int startLoadId = 2; // Force ID 2번부터
 
-        // 시작 ID 지정 (Force ID는 2부터 시작)
-        int startLoadId = 2;
-
-        var mfLoads = MooringFitting2026.Services.Load.MooringLoadGenerator.Generate(
+        var mfLoads = MooringLoadGenerator.Generate(
             _context,
             _rawStructureData.MfList,
             _rigidMap,
-            Console.WriteLine,
-            startId: startLoadId
+            Console.WriteLine
         );
-
-        // 전체 하중 리스트에 추가
         _forceLoads.AddRange(mfLoads);
 
-        // 3. [추가] Winch 하중 생성 (MF 다음 ID부터 시작)
-        // MF 하중이 하나도 없으면 2부터, 있으면 마지막 ID + 1 부터
+        // 3. Winch 하중 생성
         int winchStartId = (_forceLoads.Count > 0)
             ? _forceLoads.Max(f => f.LoadCaseID) + 1
             : startLoadId;
 
-        var winchLoads = MooringFitting2026.Services.Load.WinchLoadGenerator.Generate(
+        var winchLoads = WinchLoadGenerator.Generate(
             _context,
             _winchData,
             Console.WriteLine,
             startId: winchStartId
         );
-
         _forceLoads.AddRange(winchLoads);
-
-      }, optStage6);
+      });
     }
 
-
-
-
-    private void RunStage(string stageName, Action action, InspectorOptions stageOptions = null)
+    /// <summary>
+    /// 공통 스테이지 실행 헬퍼 메서드
+    /// </summary>
+    private void RunStage(string stageName, Action action)
     {
       Console.WriteLine($"================ {stageName} =================");
+
+      // 1. 스테이지별 로직 실행
       action();
 
-      var optionsToUse = stageOptions ?? _inspectOpt;
-      List<int> freeEndNodes = StructuralSanityInspector.Inspect(_context, optionsToUse);
+      // 2. 공통 검사 (전역 옵션 사용)
+      // 반환되는 freeEndNodes는 BDF의 SPC(경계조건)으로 활용됨
+      List<int> freeEndNodes = StructuralSanityInspector.Inspect(_context, _inspectOpt);
 
-      // [수정] _forceLoads 전달
+      // 3. 결과 Export
       BdfExporter.Export(_context, _csvPath, stageName, freeEndNodes, _rigidMap, _forceLoads);
 
-      // STAGE_06(최종) 혹은 필요할 때만 돌리도록 조건 추가 가능
-      // 여기서는 STAGE_06일 때만 실행하는 예시입니다. 모든 스테이지 실행 원하면 if문 제거하세요.
-      if (stageName.Equals("STAGE_06", StringComparison.OrdinalIgnoreCase))
-      {
-        string bdfFullPath = Path.Combine(_csvPath, stageName + ".bdf");
-        NastranSolverService.RunNastran(bdfFullPath, Console.WriteLine);
-      }
+      // 4. (옵션) 최종 단계일 경우 Nastran Solver 실행
+      //if (stageName.Equals("STAGE_06", StringComparison.OrdinalIgnoreCase))
+      //{
+      //  string bdfFullPath = Path.Combine(_csvPath, stageName + ".bdf");
+      //  NastranSolverService.RunNastran(bdfFullPath, Console.WriteLine);
+      //}
     }
+
+    // =========================================================================
+    // Private Logic Methods (리팩토링 대상 로직들)
+    // =========================================================================
 
     private void ElementCollinearOverlapGroupRun(bool isDebug)
     {
-      if(isDebug) Console.WriteLine(">>> [STAGE 01] Start Collinear/Overlap Check...");
+      if (isDebug) Console.WriteLine(">>> [STAGE 01] Start Collinear/Overlap Check...");
 
       var overlapGroup = ElementCollinearOverlapGroupInspector.FindSegmentationGroups(
         _context, angleToleranceRad: 3e-2, distanceTolerance: 20.0);
 
       if (isDebug) Console.WriteLine($"   -> Found {overlapGroup.Count} overlap groups.");
 
-      // 디버깅 활성화 (debug: true)
       ElementCollinearOverlapAlignSplitModifier.Run(
           _context,
           overlapGroup,
           tTol: 0.05,
           minSegLenTol: 1e-3,
-          debug: isDebug,  
-          log: Console.WriteLine 
+          debug: isDebug,
+          log: Console.WriteLine
       );
     }
 
@@ -291,7 +212,7 @@ namespace MooringFitting2026.Pipeline
       var opt = new ElementSplitByExistingNodesModifier.Options(
         DistanceTol: 1.0,
         GridCellSize: 5.0,
-        DryRun: false, // false면 수행
+        DryRun: false,
         SnapNodeToLine: false,
         Debug: isDebug
       );
@@ -305,16 +226,19 @@ namespace MooringFitting2026.Pipeline
       var opt = new ElementIntersectionSplitModifier.Options(
          DistTol: 1.0,
          GridCellSize: 200.0,
-         DryRun: false, // false면 수행
+         DryRun: false,
          Debug: isDebug
        );
 
-      var r = ElementIntersectionSplitModifier.Run(_context, opt, Console.WriteLine);
+      ElementIntersectionSplitModifier.Run(_context, opt, Console.WriteLine);
 
-      // 길이가 특정 길이 이상이고 Node 2개중 1개가 자유단이면 삭제 (존재하면 용접위치 병합 시, 엉망됨)
+      // [추가 로직] 길이가 너무 짧고 한쪽이 자유단인 요소 제거 (Dangling Element Cleanup)
+      RemoveDanglingShortElements();
+    }
+
+    private void RemoveDanglingShortElements()
+    {
       var nodeDegree = NodeDegreeInspector.BuildNodeDegree(_context);
-
-      // 중복 방지용 (혹시 같은 key가 여러 번 들어갈 가능성 대비)
       var shortEle = new List<int>();
 
       foreach (var kv in _context.Elements)
@@ -323,26 +247,23 @@ namespace MooringFitting2026.Pipeline
         var ele = kv.Value;
 
         var nodeIds = ele.NodeIDs;
-        if (nodeIds == null || nodeIds.Count < 2)
-          continue; // 또는 로그/에러 처리
+        if (nodeIds == null || nodeIds.Count < 2) continue;
 
         int n0 = nodeIds[0];
         int n1 = nodeIds[1];
 
-        // nodeDegree에 키가 없으면 안전하게 스킵(또는 0으로 간주 등 정책 결정)
-        if (!nodeDegree.TryGetValue(n0, out int deg0) ||
-            !nodeDegree.TryGetValue(n1, out int deg1))
+        if (!nodeDegree.TryGetValue(n0, out int deg0) || !nodeDegree.TryGetValue(n1, out int deg1))
           continue;
 
-        // 거리 계산 (DistanceUtils가 nodeId 기반이면 node 존재 확인이 필요할 수 있음)
         double distance = DistanceUtils.GetDistanceBetweenNodes(n0, n1, _context.Nodes);
 
+        // 길이 < 50.0 이고 한쪽 끝이 자유단(Degree=1)이면 삭제 대상
         if (distance < 50.0 && (deg0 == 1 || deg1 == 1))
         {
           shortEle.Add(eleId);
         }
       }
-      // 실제 삭제
+
       if (shortEle.Count > 0)
       {
         foreach (var id in shortEle)
@@ -357,7 +278,6 @@ namespace MooringFitting2026.Pipeline
     {
       Console.WriteLine(">>> [STAGE 03.5] Merging Duplicate Elements with Parallel Axis Theorem...");
 
-      // 1. 중복 그룹 찾기
       var duplicateGroups = ElementDuplicateInspector.FindDuplicateGroups(_context);
 
       if (duplicateGroups.Count == 0)
@@ -370,10 +290,8 @@ namespace MooringFitting2026.Pipeline
 
       foreach (var groupIDs in duplicateGroups)
       {
-        // 그룹 유효성 체크
         if (groupIDs == null || groupIDs.Count < 2) continue;
 
-        // Element 객체 리스트 확보
         var targetElements = new List<Element>();
         foreach (var id in groupIDs)
         {
@@ -383,57 +301,44 @@ namespace MooringFitting2026.Pipeline
 
         if (targetElements.Count < 2) continue;
 
-        // 2. 등가 물성 계산 (평행축 정리)
+        // 1. 등가 물성 계산
         SectionResult mergedProp = EquivalentPropertyMerger.Merge(targetElements, _context.Properties);
 
-        // 3. 새로운 PBEAM Property 생성
-        // Nastran PBEAM 포맷에 맞게 Dim 구성 (여기서는 예시로 Area, Izz, Iyy, J 순서 저장)
-        // 실제 PBEAM 카드는 더 많은 파라미터가 필요하므로, 추후 BdfExporter에서 이 순서를 맞춰야 함
+        // 2. 새 Property 생성
         var newDims = new List<double>
-        {
-            mergedProp.Area,
-            mergedProp.Izz,
-            mergedProp.Iyy,
-            mergedProp.J
-        };
+                {
+                    mergedProp.Area,
+                    mergedProp.Izz,
+                    mergedProp.Iyy,
+                    mergedProp.J
+                };
 
-        // 재질 ID는 첫 번째 요소의 것을 따라감 (가정)
         int baseMatID = 1;
         if (_context.Properties.Contains(targetElements[0].PropertyID))
         {
           baseMatID = _context.Properties[targetElements[0].PropertyID].MaterialID;
         }
 
-        // 새 Property 등록 ("EQUIV_PBEAM" 타입)
         int newPropID = _context.Properties.AddOrGet("EQUIV_PBEAM", newDims, baseMatID);
 
-        // 4. 모델 업데이트 (병합)
-        // 첫 번째 요소를 대표(Primary)로 남기고 나머지는 삭제
+        // 3. 병합 (첫 번째 요소 유지, 나머지 삭제)
         int primaryEleID = groupIDs[0];
         var primaryEle = _context.Elements[primaryEleID];
 
-        // 대표 요소의 Property 교체
-        // (Element는 불변 객체이므로 삭제 후 재생성 혹은 AddWithID 덮어쓰기)
-        var newEle = new Element(primaryEle.NodeIDs.ToList(), newPropID,
-                                 new Dictionary<string, string>(primaryEle.ExtraData));
-
-        // 덮어쓰기
-        _context.Elements.AddWithID(primaryEleID, newEle.NodeIDs.ToList(), newPropID,
+        // Property 교체 (Elements는 AddWithID로 덮어쓰기)
+        _context.Elements.AddWithID(primaryEleID, primaryEle.NodeIDs.ToList(), newPropID,
                                     new Dictionary<string, string>(primaryEle.ExtraData));
 
-        // 나머지 요소 삭제
         for (int i = 1; i < groupIDs.Count; i++)
         {
           _context.Elements.Remove(groupIDs[i]);
         }
 
         mergedCount++;
-        // (선택) 로그 출력
         if (isDebug) Console.WriteLine($"Merged Elements [{string.Join(",", groupIDs)}] -> ID {primaryEleID} (New PropID: {newPropID})");
       }
 
       Console.WriteLine($"Total {mergedCount} groups merged.");
     }
-
   }
 }
