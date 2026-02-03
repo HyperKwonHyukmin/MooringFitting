@@ -74,6 +74,7 @@ namespace MooringFitting2026.Pipeline
       // [변경] 각 단계별로 ActiveStages 플래그를 확인합니다.
 
       // Stage 01
+      // 모델의 기초가 되는 중복 및 공선(Collinear) 요소를 정리      
       if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage01_CollinearOverlap))
       {
         RunStage("STAGE_01", () =>
@@ -203,20 +204,30 @@ namespace MooringFitting2026.Pipeline
 
     private void ElementCollinearOverlapGroupRun(bool isDebug)
     {
-      if (isDebug) Console.WriteLine(">>> [STAGE 01] Start Collinear/Overlap Check...");
+      if (isDebug)
+      {
+        Console.WriteLine(">>> [STAGE 01] 중복/공선 요소 검사 및 정렬 수행");
+      }
 
+      // 1. 그룹핑 (Inspector)
+      // angleToleranceRad: 3e-2 (약 1.7도), distanceTolerance: 20.0
       var overlapGroup = ElementCollinearOverlapGroupInspector.FindSegmentationGroups(
         _context, angleToleranceRad: 3e-2, distanceTolerance: 20.0);
 
-      if (isDebug) Console.WriteLine($"   -> Found {overlapGroup.Count} overlap groups.");
+      if (isDebug)
+      {
+        Console.WriteLine($"   -> 총 {overlapGroup.Count}개의 중복 의심 그룹을 찾았습니다.");
+      }
 
+      // 2. 정렬 및 분할 (Modifier)
       ElementCollinearOverlapAlignSplitModifier.Run(
           _context,
           overlapGroup,
           tTol: 0.05,
           minSegLenTol: 1e-3,
           debug: isDebug,
-          log: Console.WriteLine
+          log: Console.WriteLine,
+          cloneExternalNodes: false
       );
     }
 
