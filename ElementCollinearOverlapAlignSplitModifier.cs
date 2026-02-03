@@ -11,6 +11,10 @@ namespace MooringFitting2026.Modifier.ElementModifier
 {
   public static class ElementCollinearOverlapAlignSplitModifier
   {
+    /// <summary>
+    /// 중복/공선 그룹을 전역 그리드(Global Grid)에 맞춰 정렬하고 재구성합니다.
+    /// (Gap 메우기, 미세 중복 병합, 길이 비례 스냅 적용)
+    /// </summary>
     public static void Run(
         FeModelContext context,
         List<HashSet<int>> overlapGroups,
@@ -46,11 +50,15 @@ namespace MooringFitting2026.Modifier.ElementModifier
         var validElements = group.Where(elements.Contains).ToList();
         if (validElements.Count < 2) continue;
 
-        if (debug) log($"   [그룹 {processedCount}] 요소 {validElements.Count}개 재구성 시작...");
+        if (debug)
+        {
+          log($"   [그룹 {processedCount}] 요소 {validElements.Count}개 재구성 시작: ID[{string.Join(", ", validElements)}]");
+        }
 
         // 1. 기준선(Reference Line) 계산
         if (!TryBuildReferenceLine(nodes, elements, group, out var P0, out var vRef))
         {
+          if (debug) log("      -> [건너뜀] 기준선을 계산할 수 없습니다.");
           continue;
         }
 
@@ -91,7 +99,7 @@ namespace MooringFitting2026.Modifier.ElementModifier
         double t1 = Point3dUtils.Dot(Point3dUtils.Sub(nodes[n1], P0), vRef);
         double t2 = Point3dUtils.Dot(Point3dUtils.Sub(nodes[n2], P0), vRef);
 
-        // 항상 작은 값이 Start가 되도록 정규화 (나중에 복원)
+        // 항상 작은 값이 Start가 되도록 정규화
         elementRanges[eid] = (Math.Min(t1, t2), Math.Max(t1, t2));
 
         rawPoints.Add(t1);
@@ -99,7 +107,6 @@ namespace MooringFitting2026.Modifier.ElementModifier
       }
 
       // 2. 좌표 군집화 (Clustering) -> 이것이 "Master Grid"가 됩니다.
-      // 가까운 점들을 합쳐서 Gap과 미세 Overlap을 제거합니다.
       rawPoints.Sort();
       var gridPoints = ClusterValues(rawPoints, clusterTolerance);
 
@@ -119,16 +126,14 @@ namespace MooringFitting2026.Modifier.ElementModifier
         // 단, '30% 길이 규칙' 적용
         double snapRatio = 0.3;
         double maxSnapMove = Math.Max(orgLen * snapRatio, clusterTolerance);
-        // 최소한 ClusterTolerance만큼은 움직일 수 있어야 Gap이 붙음
 
         double newStart = SnapToGrid(originalRange.start, gridPoints, maxSnapMove);
         double newEnd = SnapToGrid(originalRange.end, gridPoints, maxSnapMove);
 
-        // 스냅 결과 길이가 너무 짧아지면(붕괴), 스냅 취소하고 원본 유지할지 결정
-        // 여기서는 '제거'하는 쪽으로 처리 (노이즈 부재)
+        // 스냅 결과 길이가 너무 짧아지면(붕괴), 제거 (노이즈 부재)
         if (Math.Abs(newEnd - newStart) < minSegLen)
         {
-          elements.Remove(eid); // 너무 짧아져서 소멸
+          elements.Remove(eid);
           continue;
         }
 
@@ -211,30 +216,16 @@ namespace MooringFitting2026.Modifier.ElementModifier
         }
       }
 
-      // 허용 범위(maxMove) 이내일 때만 스냅, 아니면 원래 위치 반환?
-      // 아니요, "정렬"이 목적이므로 maxMove를 넘더라도 가장 가까운 Grid가 있다면
-      // 구조적 연결을 위해 붙이는게 맞습니다. 
-      // 단, 사용자가 "30% 룰"을 원했으므로 그 제한을 둡니다.
       if (minDiff <= maxMove)
       {
         return best;
       }
-
-      // Grid에 붙지 못하는 경우(너무 멂) -> 자신의 위치를 유지하되 투영된 좌표 사용
-      // 하지만 이러면 Gap이 안 메워질 수 있음. 
-      // 여기서는 과감하게 Grid에 점을 추가하지 않고, 
-      // '기존 Grid에 붙지 못하면 자기 자신이 새로운 Grid가 되었어야 함'을 상기해야 함.
-      // 위 ClusterValues에서 이미 자기 자신도 Grid 후보에 포함되었으므로,
-      // 사실상 minDiff는 0에 가까워야 정상임.
-      // 다만 Cluster 과정에서 평균값 이동으로 인해 약간 멀어질 수 있음.
-
-      return best;
+      return best; // 멀더라도 구조적 연결을 위해 가장 가까운 Grid 선택 (Cluster에 포함되었으므로 안전)
     }
 
     // =================================================================
-    // Private Logic Methods (Reference Line 계산 등 기존 유지)
+    // Helper: Reference Line Calculation (기존 로직 유지)
     // =================================================================
-
     private static bool TryBuildReferenceLine(Nodes nodes, Elements elements, HashSet<int> group, out Point3D P0, out Point3D vRef)
     {
       P0 = default; vRef = default;
@@ -260,10 +251,8 @@ namespace MooringFitting2026.Modifier.ElementModifier
 
       if (seedId < 0 || endpoints.Count < 2) return false;
 
-      // 무게중심을 기준점으로 (안정적)
       P0 = Point3dUtils.GetCentroid(endpoints);
 
-      // 가장 긴 요소의 방향을 기준 벡터로
       var seedEle = elements[seedId];
       var (s1, s2) = seedEle.GetEndNodePair();
       vRef = Vector3dUtils.Normalize(Vector3dUtils.Direction(nodes[s1], nodes[s2]));
