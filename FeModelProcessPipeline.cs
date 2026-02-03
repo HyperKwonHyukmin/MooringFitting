@@ -23,6 +23,8 @@ namespace MooringFitting2026.Pipeline
     private readonly RawStructureData _rawStructureData;
     private readonly InspectorOptions _inspectOpt;
     private readonly string _csvPath;
+    private Dictionary<int, MooringFittingConnectionModifier.RigidInfo> _rigidMap
+        = new Dictionary<int, MooringFittingConnectionModifier.RigidInfo>();
 
     public FeModelProcessPipeline(FeModelContext context, RawStructureData rawStructureData,
       InspectorOptions inspectOpt, string CsvPath)
@@ -187,31 +189,35 @@ namespace MooringFitting2026.Pipeline
           Debug = true
         };
 
-        int count = ElementMeshRefinementModifier.Run(_context, _rawStructureData, meshOpt, Console.WriteLine);
+        int count = ElementMeshRefinementModifier.Run(_context, meshOpt, Console.WriteLine);
         Console.WriteLine($"[Stage 05] Meshing Completed. {count} elements refined.");
 
       }, optStage5);
 
 
+      // Stage 06 : MF의 Rigid 연결
+      var optStage6 = new InspectorOptions { DebugMode = true, CheckTopology = false };
+
+      RunStage("STAGE_06", () =>
+      {
+        // 리턴받은 딕셔너리를 멤버변수에 저장
+        _rigidMap = MooringFittingConnectionModifier.Run(_context, _rawStructureData.MfList, Console.WriteLine);
+      }, optStage6);
+
+
     }
 
 
-    // [수정]
     private void RunStage(string stageName, Action action, InspectorOptions stageOptions = null)
     {
       Console.WriteLine($"================ {stageName} =================");
-
-      // 1. 파이프라인 로직 수행
       action();
 
-      // 2. 옵션 설정
       var optionsToUse = stageOptions ?? _inspectOpt;
-
-      // 3. 검사 수행 및  자유단 노드 리스트 획득 
       List<int> freeEndNodes = StructuralSanityInspector.Inspect(_context, optionsToUse);
 
-      // 4. 결과 내보내기 (SPC 리스트 전달)
-      BdfExporter.Export(_context, _csvPath, stageName, freeEndNodes);
+      // [수정] _rigidMap도 함께 Export에 전달
+      BdfExporter.Export(_context, _csvPath, stageName, freeEndNodes, _rigidMap);
     }
 
     private void ElementCollinearOverlapGroupRun(bool isDebug)
