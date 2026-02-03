@@ -13,6 +13,7 @@ namespace MooringFitting2026.Model.Entities
     // 내부 상태
     private readonly Dictionary<int, Point3D> _nodes = new Dictionary<int, Point3D>();
     private readonly Dictionary<string, HashSet<int>> _nodeLookup = new Dictionary<string, HashSet<int>>();
+    public ICollection<int> Keys => _nodes.Keys;
 
     // 다음에 부여할 Node ID
     private int _nextNodeID = 1;
