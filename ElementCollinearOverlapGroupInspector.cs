@@ -1,12 +1,11 @@
-using MooringFitting2026.Model.Entities; // Element 클래스 위치
-using MooringFitting2026.Model.Geometry; // 신형 Point3D, Vector3D 위치
-using MooringFitting2026.Utils.Geometry;           // ProjectionUtils, SizeUtils
+using MooringFitting2026.Model.Entities;
+using MooringFitting2026.Model.Geometry;
+using MooringFitting2026.Utils.Geometry;
 using MooringFitting2026.Utils;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 
-// [핵심 수정] 네임스페이스를 'Element' -> 'ElementLevel'로 변경하여 이름 충돌 방지!
 namespace MooringFitting2026.Inspector.ElementInspector
 {
   /// <summary>
@@ -14,36 +13,40 @@ namespace MooringFitting2026.Inspector.ElementInspector
   /// </summary>
   public static class ElementCollinearOverlapGroupInspector
   {
+    /// <summary>
+    /// 공선성(같은 직선 위)과 중복(겹침)을 기준으로 병합되어야 할 Element 그룹들을 찾습니다.
+    /// </summary>
     public static List<HashSet<int>> FindSegmentationGroups(
         FeModelContext context,
         double angleToleranceRad,
         double distanceTolerance)
     {
-      // 1. 공선 그룹(Collinear Groups) 찾기
+      // 1. 공선 그룹(Collinear Groups) 찾기: 방향이 같고 일직선상에 있는 요소끼리 1차 묶음
       var collinearGroups = ElementCollinearityInspector.FindCollinearGroups(
           context, angleToleranceRad, distanceTolerance);
 
-      // 2. 중복 요소(Overlap Elements) 찾기
+      // 2. 중복 요소(Overlap Elements) 찾기: 공선 그룹 내에서 실제로 겹치는 구간이 있는 요소 쌍 찾기
       var overlaps = ElementOverlapInspector.FindOverlaps(context, collinearGroups);
 
-      // 3. Union-Find로 중복된 요소들을 하나의 그룹으로 병합
-      var ids = overlaps
+      // 3. Union-Find 알고리즘으로 중복된 요소들을 하나의 그룹으로 최종 병합
+      // (A와 B가 겹치고, B와 C가 겹치면 -> A, B, C는 한 그룹)
+      var distinctIds = overlaps
           .SelectMany(p => new[] { p.ElementA, p.ElementB })
           .Distinct()
           .ToList();
 
-      if (ids.Count == 0)
+      if (distinctIds.Count == 0)
         return new List<HashSet<int>>();
 
-      var uf = new UnionFind(ids);
+      var uf = new UnionFind(distinctIds);
       foreach (var (a, b) in overlaps)
       {
         uf.Union(a, b);
       }
 
-      // 4. 결과 반환 (그룹핑)
+      // 4. 그룹화 결과 반환
       var groups = new Dictionary<int, HashSet<int>>();
-      foreach (var id in ids)
+      foreach (var id in distinctIds)
       {
         int root = uf.Find(id);
         if (!groups.TryGetValue(root, out var set))
@@ -51,16 +54,18 @@ namespace MooringFitting2026.Inspector.ElementInspector
         set.Add(id);
       }
 
+      // 요소가 2개 이상인 그룹만 유효하므로 필터링하여 반환
       return groups.Values
           .Where(g => g.Count >= 2)
           .ToList();
     }
   }
+}
 
-  /// <summary>
-  /// 내부 클래스 1: 공선성(Collinearity) 검사기
-  /// </summary>
-  public static class ElementCollinearityInspector
+/// <summary>
+/// 내부 클래스 1: 공선성(Collinearity) 검사기
+/// </summary>
+public static class ElementCollinearityInspector
   {
     public static List<List<int>> FindCollinearGroups(
         FeModelContext context,
@@ -198,4 +203,3 @@ namespace MooringFitting2026.Inspector.ElementInspector
       return overlapLen > tol;
     }
   }
-}
