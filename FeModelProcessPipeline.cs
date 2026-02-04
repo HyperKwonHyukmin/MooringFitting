@@ -300,69 +300,26 @@ namespace MooringFitting2026.Pipeline
 
     private void ElementDuplicateMergeRun(bool isDebug)
     {
-      Console.WriteLine(">>> [STAGE 03.5] Merging Duplicate Elements with Parallel Axis Theorem...");
+      Console.WriteLine(">>> [STAGE 03.5] 중복 요소 병합 및 등가 물성 계산");
 
-      var duplicateGroups = ElementDuplicateInspector.FindDuplicateGroups(_context);
+      // [수정] 확장자를 .csv로 변경
+      string reportPath = Path.Combine(_csvPath, "DuplicateMerge_Report.csv");
 
-      if (duplicateGroups.Count == 0)
+      var opt = new ElementDuplicateMergeModifier.Options(
+          ReportFilePath: reportPath,
+          Debug: isDebug
+      );
+
+      var result = ElementDuplicateMergeModifier.Run(_context, opt, Console.WriteLine);
+
+      if (result.ElementsMerged > 0)
       {
-        Console.WriteLine("No duplicate elements found.");
-        return;
+        Console.WriteLine($"   -> {result.ElementsMerged}개 그룹 병합 완료. (엑셀 보고서 생성됨)");
       }
-
-      int mergedCount = 0;
-
-      foreach (var groupIDs in duplicateGroups)
+      else
       {
-        if (groupIDs == null || groupIDs.Count < 2) continue;
-
-        var targetElements = new List<Element>();
-        foreach (var id in groupIDs)
-        {
-          if (_context.Elements.Contains(id))
-            targetElements.Add(_context.Elements[id]);
-        }
-
-        if (targetElements.Count < 2) continue;
-
-        // 1. 등가 물성 계산
-        SectionResult mergedProp = EquivalentPropertyMerger.Merge(targetElements, _context.Properties);
-
-        // 2. 새 Property 생성
-        var newDims = new List<double>
-                {
-                    mergedProp.Area,
-                    mergedProp.Izz,
-                    mergedProp.Iyy,
-                    mergedProp.J
-                };
-
-        int baseMatID = 1;
-        if (_context.Properties.Contains(targetElements[0].PropertyID))
-        {
-          baseMatID = _context.Properties[targetElements[0].PropertyID].MaterialID;
-        }
-
-        int newPropID = _context.Properties.AddOrGet("EQUIV_PBEAM", newDims, baseMatID);
-
-        // 3. 병합 (첫 번째 요소 유지, 나머지 삭제)
-        int primaryEleID = groupIDs[0];
-        var primaryEle = _context.Elements[primaryEleID];
-
-        // Property 교체 (Elements는 AddWithID로 덮어쓰기)
-        _context.Elements.AddWithID(primaryEleID, primaryEle.NodeIDs.ToList(), newPropID,
-                                    new Dictionary<string, string>(primaryEle.ExtraData));
-
-        for (int i = 1; i < groupIDs.Count; i++)
-        {
-          _context.Elements.Remove(groupIDs[i]);
-        }
-
-        mergedCount++;
-        if (isDebug) Console.WriteLine($"Merged Elements [{string.Join(",", groupIDs)}] -> ID {primaryEleID} (New PropID: {newPropID})");
+        Console.WriteLine("   -> 병합된 요소가 없습니다.");
       }
-
-      Console.WriteLine($"Total {mergedCount} groups merged.");
     }
   }
 }
