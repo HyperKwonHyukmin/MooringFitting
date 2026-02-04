@@ -1,4 +1,5 @@
 using MooringFitting2026.Exporters;
+using MooringFitting2026.Extensions;
 using MooringFitting2026.Inspector;
 using MooringFitting2026.Inspector.ElementInspector;
 using MooringFitting2026.Model.Entities;
@@ -100,6 +101,10 @@ namespace MooringFitting2026.Pipeline
         RunStage("STAGE_03", () =>
         {
           ElementIntersectionSplitRun(_inspectOpt.DebugMode);
+
+          // [★ 추가] 교차 분할 후 발생한 1.0 미만의 미세 요소를 강제 병합
+          // 기존 RemoveDanglingShortElements() 대신 이걸 쓰거나 둘 다 써도 무방함
+          CollapseShortElementsRun(1.0);
         });
       }
       else LogSkip("STAGE_03");
@@ -129,6 +134,9 @@ namespace MooringFitting2026.Pipeline
           };
           var result = ElementExtendToBBoxIntersectAndSplitModifier.Run(_context, extendOpt, Console.WriteLine);
           Console.WriteLine($"[Stage 04] Extended: {result.SuccessConnections} elements.");
+
+          // [★ 추가] 연장/분할 과정에서 생긴 미세 요소(Snap 오차 등)를 즉시 병합하여 정리
+          CollapseShortElementsRun(1.0);
         });
       }
       else LogSkip("STAGE_04");
@@ -319,6 +327,96 @@ namespace MooringFitting2026.Pipeline
       else
       {
         Console.WriteLine("   -> 병합된 요소가 없습니다.");
+      }
+    }
+
+
+    /// <summary>
+    /// 길이가 설정된 허용치(tolerance) 미만인 요소를 찾아 제거하고,
+    /// 해당 요소의 양 끝 노드를 하나로 병합(Collapse)하여 위상 연결을 유지합니다.
+    /// </summary>
+    private void CollapseShortElementsRun(double lengthTolerance)
+    {
+      Console.WriteLine($">>> [Short Element Collapse] 길이 {lengthTolerance} 미만 요소 병합 수행");
+
+      var elements = _context.Elements;
+      var nodes = _context.Nodes;
+      int collapsedCount = 0;
+
+      // 1. 컬렉션 변경 방지를 위해 전체 ID 스냅샷 생성
+      var allElementIds = elements.Keys.ToList();
+
+      foreach (var eid in allElementIds)
+      {
+        // 이미 삭제된 요소면 스킵
+        if (!elements.Contains(eid)) continue;
+
+        var targetEle = elements[eid];
+        var nodeIDs = targetEle.NodeIDs;
+
+        // 유효성 검사
+        if (nodeIDs == null || nodeIDs.Count < 2) continue;
+
+        int n1 = nodeIDs[0];
+        int n2 = nodeIDs[1];
+
+        // 길이 계산
+        double len = DistanceUtils.GetDistanceBetweenNodes(n1, n2, nodes);
+
+        // 2. 병합 대상 식별 (0보다 크고 허용치보다 작은 경우)
+        if (len > 1e-12 && len < lengthTolerance)
+        {
+          // 병합 전략: N2를 삭제하고, N2를 참조하던 모든 요소를 N1으로 연결 변경
+          // (N1: Keep, N2: Remove)
+          int keepNodeID = n1;
+          int removeNodeID = n2;
+
+          // [단계 A] 짧은 요소 자체 삭제
+          elements.Remove(eid);
+
+          // [단계 B] 삭제될 노드(N2)를 참조하고 있는 '다른' 모든 요소 찾기
+          // (Elements 클래스에 역참조 기능이 없다면 전수 검사 필요)
+          var connectedNeighbors = elements
+              .Where(kv => kv.Value.NodeIDs.Contains(removeNodeID))
+              .ToList();
+
+          foreach (var neighbor in connectedNeighbors)
+          {
+            int neighborID = neighbor.Key;
+            var neighborEle = neighbor.Value;
+
+            // 노드 교체 시도 (Extensions의 TryReplaceNode 활용)
+            if (neighborEle.TryReplaceNode(removeNodeID, keepNodeID, out var newEle))
+            {
+              // 기존 속성(ExtraData 등) 유지하면서 덮어쓰기
+              var extraCopy = newEle.ExtraData.ToDictionary(k => k.Key, v => v.Value);
+
+              elements.AddWithID(
+                  neighborID,
+                  newEle.NodeIDs.ToList(),
+                  newEle.PropertyID,
+                  extraCopy
+              );
+            }
+          }
+
+          // [단계 C] 고립된 노드 삭제 (Nodes 컬렉션에서 제거)
+          if (nodes.Contains(removeNodeID))
+          {
+            nodes.Remove(removeNodeID);
+          }
+
+          collapsedCount++;
+        }
+      }
+
+      if (collapsedCount > 0)
+      {
+        Console.WriteLine($"   -> [완료] 총 {collapsedCount}개의 짧은 요소를 병합(Collapse) 처리했습니다.");
+      }
+      else
+      {
+        Console.WriteLine("   -> 병합 대상이 없습니다.");
       }
     }
   }
