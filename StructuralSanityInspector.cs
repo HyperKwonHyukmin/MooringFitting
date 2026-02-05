@@ -9,8 +9,6 @@ namespace MooringFitting2026.Inspector
 {
   /// <summary>
   /// FE 모델의 구조적 건전성(무결성)을 검사하는 클래스입니다.
-  /// 연결성, 기하 형상, 중복 요소 등을 확인하고 결과를 한국어로 출력합니다.
-  /// 또한, 사용되지 않는 고립 노드를 정리하되 Rigid 연결점 등은 보호합니다.
   /// </summary>
   public static class StructuralSanityInspector
   {
@@ -18,18 +16,33 @@ namespace MooringFitting2026.Inspector
     /// 모델 전체 검사를 수행하고 결과를 콘솔에 출력합니다.
     /// 반환값: 경계조건(SPC) 생성을 위한 자유단 노드 리스트 (RBE 종속 노드 제외됨)
     /// </summary>
-    /// <param name="context">FE 모델 데이터</param>
-    /// <param name="opt">검사 옵션</param>
-    /// <param name="protectedNodes">삭제하면 안 되는 중요 노드 목록 (예: Rigid Independent Node)</param>
-    /// <param name="rbeDependentNodes">경계조건(SPC) 설정에서 제외할 RBE 종속 노드 목록</param>
     public static List<int> Inspect(
         FeModelContext context,
         InspectorOptions opt,
         HashSet<int>? protectedNodes = null,
-        HashSet<int>? rbeDependentNodes = null) // [추가] SPC 제외 목록
+        HashSet<int>? rbeDependentNodes = null)
     {
       if (context is null) throw new ArgumentNullException(nameof(context));
       opt ??= InspectorOptions.Default;
+
+      // =======================================================================
+      // [수정된 부분 시작] 옵션 확인 및 조기 종료 로직 추가
+      // =======================================================================
+
+      // 1. 활성화된 검사가 하나라도 있는지 확인
+      bool anyCheckEnabled = opt.CheckTopology || opt.CheckGeometry ||
+                             opt.CheckEquivalence || opt.CheckDuplicate ||
+                             opt.CheckIntegrity || opt.CheckIsolation;
+
+      // 2. 모든 검사가 꺼져있고, 디버그 모드도 아니라면 아무것도 출력하지 않고 종료
+      if (!anyCheckEnabled && !opt.DebugMode)
+      {
+        return new List<int>(); // 빈 리스트 반환 (조용히 종료)
+      }
+
+      // =======================================================================
+      // [수정된 부분 끝]
+      // =======================================================================
 
       Console.WriteLine("\n[구조 건전성 검사 시작]");
       if (opt.DebugMode) Console.WriteLine("  * 디버그 모드: 켜짐 (상세 로그 출력)");
@@ -41,7 +54,6 @@ namespace MooringFitting2026.Inspector
       // 1. 위상학적 연결성 검사 (Topology)
       if (opt.CheckTopology)
       {
-        // [수정] rbeDependentNodes 전달
         freeEndNodes = InspectTopology(context, opt, protectedNodes, rbeDependentNodes);
       }
 
@@ -81,6 +93,8 @@ namespace MooringFitting2026.Inspector
     }
 
     // --------------------------------------------------------------------------
+    // (이하 private 메서드들은 기존 코드와 동일하므로 그대로 유지하면 되네)
+    // --------------------------------------------------------------------------
 
     private static List<int> InspectTopology(
         FeModelContext context,
@@ -88,6 +102,7 @@ namespace MooringFitting2026.Inspector
         HashSet<int>? protectedNodes,
         HashSet<int>? rbeDependentNodes)
     {
+      // ... (기존 코드 유지) ...
       // 01. Element 그룹 연결성 확인
       var connectedGroups = ElementConnectivityInspector.FindConnectedElementGroups(context.Elements);
       if (connectedGroups.Count <= 1)
@@ -101,11 +116,9 @@ namespace MooringFitting2026.Inspector
       // A. 자유단 노드 (Degree = 1) -> SPC 생성 대상
       var endNodes = nodeDegree.Where(kv => kv.Value == 1).Select(kv => kv.Key).ToList();
 
-      // [핵심 수정] RBE 종속 노드는 자유단이라도 경계조건(SPC)에서 제외
       if (rbeDependentNodes != null && rbeDependentNodes.Count > 0)
       {
         int initialCount = endNodes.Count;
-        // 종속 노드 목록에 포함된 노드 제거
         endNodes.RemoveAll(id => rbeDependentNodes.Contains(id));
 
         int excludedCount = initialCount - endNodes.Count;
@@ -125,7 +138,6 @@ namespace MooringFitting2026.Inspector
 
       PrintNodeStat("02_B - 고립된 노드 (연결 0개)", isolatedNodes, opt, isWarning: true);
 
-      // 고아 노드(Orphan Node) 자동 정리 (단, protectedNodes는 제외)
       int removedOrphans = RemoveOrphanNodesByElementConnection(context, isolatedNodes, protectedNodes);
       if (removedOrphans > 0)
         Console.WriteLine($"      [자동 정리] 사용되지 않는 고립 노드 {removedOrphans}개를 삭제했습니다.");
@@ -243,10 +255,6 @@ namespace MooringFitting2026.Inspector
       }
     }
 
-    // ==========================================================================
-    // Helper Methods
-    // ==========================================================================
-
     private static void PrintNodeStat(string title, List<int> nodes, InspectorOptions opt, bool isWarning)
     {
       if (nodes.Count == 0) return;
@@ -264,7 +272,7 @@ namespace MooringFitting2026.Inspector
     private static string SummarizeIds(List<int> ids, InspectorOptions opt)
     {
       if (ids == null || ids.Count == 0) return "";
-      int limit = opt.PrintAllNodeIds ? int.MaxValue : 30; // 기본 30개만 표시
+      int limit = opt.PrintAllNodeIds ? int.MaxValue : 30;
 
       var subset = ids.Take(limit);
       string str = string.Join(", ", subset);
@@ -300,12 +308,9 @@ namespace MooringFitting2026.Inspector
       int removed = 0;
       foreach (var nid in isolatedNodes)
       {
-        // [보호 로직] Rigid 요소의 중심점 등 삭제 금지 목록에 있는 경우 스킵
         if (protectedNodes != null && protectedNodes.Contains(nid)) continue;
-
         if (!context.Nodes.Contains(nid)) continue;
 
-        // 실제로 어떤 요소에도 쓰이지 않는지 재확인 (방어 코드)
         bool referenced = context.Elements.Any(kv => kv.Value.NodeIDs.Contains(nid));
         if (!referenced)
         {
