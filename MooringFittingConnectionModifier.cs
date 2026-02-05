@@ -10,104 +10,129 @@ namespace MooringFitting2026.Modifier.ElementModifier
 {
   public static class MooringFittingConnectionModifier
   {
-    // 반환할 Rigid 정보 구조체
     public record RigidInfo(int IndependentNodeID, List<int> DependentNodeIDs, string RefID);
 
-    public static Dictionary<int, RigidInfo> Run(FeModelContext context, List<MFData> mfList, Action<string> log)
+    public static Dictionary<int, RigidInfo> Run(
+        FeModelContext context,
+        List<MFData> mfList,
+        List<int> spcNodeIDs,
+        Action<string> log)
     {
       var rigidMap = new Dictionary<int, RigidInfo>();
 
       if (mfList == null || mfList.Count == 0) return rigidMap;
 
-      log($"[Stage 06] Generating Mooring Fitting Connections (Dictionary Mode)...");
+      log($"[Stage 06] Generating Mooring Fitting Connections (Expanded Bounding Box Mode)...");
 
       var nodes = context.Nodes;
+      var spcSet = (spcNodeIDs != null) ? new HashSet<int>(spcNodeIDs) : new HashSet<int>();
 
-      // Rigid ID 시작 번호 (기존 요소와 겹치지 않게 안전하게 900000번대 사용)
       int nextRigidID = 900001;
       if (context.Elements.Count > 0)
       {
-        // 혹시라도 요소가 90만개를 넘거나 90만번대를 쓰고 있다면 그 다음 번호부터
         int maxElemID = context.Elements.Keys.Max();
         if (maxElemID >= nextRigidID) nextRigidID = maxElemID + 1;
       }
 
+      double selectionMargin = 50.0;
+
       foreach (var mf in mfList)
       {
-        // 1. Independent Node (Point Mass 위치) 생성
-        double massX = mf.Location[0];
-        double massY = mf.Location[1];
-        double massZ = mf.Location[2];
-
-        int indNodeID = nodes.AddOrGet(massX, massY, massZ);
-
-        // 2. Rigid Range Polygon 구성
+        // 1. Rigid Range (4개 지점) 가져오기
         if (mf.RigidRange == null || mf.RigidRange.Count < 3) continue;
-
         var polygon = mf.RigidRange.Select(pt => new Point3D(pt.Item1, pt.Item2, pt.Item3)).ToList();
 
-        // 3. 영역 내 Dependent Nodes 검색 (메싱된 노드 포함)
-        List<int> depNodeIDs = FindNodesInPolygon(nodes, polygon, toleranceZ: 50.0);
+        // 2. 영역 내 Dependent Nodes 검색 (Z 무시 2D 검색)
+        List<int> depNodeIDs = FindNodesInExpandedBox(nodes, polygon, selectionMargin, toleranceZ: double.MaxValue);
+
+        // SPC 노드 제외
+        if (spcSet.Count > 0)
+        {
+          depNodeIDs.RemoveAll(id => spcSet.Contains(id));
+        }
+
+        if (depNodeIDs.Count == 0)
+        {
+          log($"  [Warn] MF '{mf.ID}': No valid nodes found. Skipping.");
+          continue;
+        }
+
+        // 3. Independent Node (중심점) 생성
+        // [수정] Z값을 평균이 아닌 '장비의 원본 높이'로 설정
+        double massX = mf.Location[0];
+        double massY = mf.Location[1];
+        double massZ = mf.Location[2]; // 원본 높이 유지
+
+        int indNodeID = nodes.AddOrGet(massX, massY, massZ);
 
         // 자기 자신 제외
         if (depNodeIDs.Contains(indNodeID)) depNodeIDs.Remove(indNodeID);
 
-        if (depNodeIDs.Count == 0)
-        {
-          log($"  [Warn] MF '{mf.ID}': No nodes found in range. Skipping.");
-          continue;
-        }
-
-        // 4. Element에 추가하지 않고, 딕셔너리에 정보 저장
+        // 4. 결과 저장
         rigidMap.Add(nextRigidID, new RigidInfo(indNodeID, depNodeIDs, mf.ID));
-
-        log($"  -> [Registered] MF '{mf.ID}' as Rigid E{nextRigidID} (Ind: {indNodeID}, Deps: {depNodeIDs.Count} nodes)");
+        log($"  -> [Registered] MF '{mf.ID}' (Ind: {indNodeID} @ Z={massZ}, Deps: {depNodeIDs.Count})");
 
         nextRigidID++;
       }
+
+      ValidateRigidDependencies(rigidMap, log);
 
       log($"[Stage 06] Generated {rigidMap.Count} Rigid connection definitions.");
       return rigidMap;
     }
 
-    // --- Helper Methods ---
+    private static void ValidateRigidDependencies(Dictionary<int, RigidInfo> rigidMap, Action<string> log)
+    {
+      var dependencyMap = new Dictionary<int, int>();
+      int errorCount = 0;
 
-    private static List<int> FindNodesInPolygon(Nodes nodes, List<Point3D> polygon, double toleranceZ)
+      foreach (var kv in rigidMap)
+      {
+        int rigidID = kv.Key;
+        var info = kv.Value;
+
+        foreach (int depNode in info.DependentNodeIDs)
+        {
+          if (dependencyMap.TryGetValue(depNode, out int existingRigidID))
+          {
+            log($"  [CRITICAL ERROR] Double Dependency on Node {depNode} (Rigid E{existingRigidID} & E{rigidID})");
+            errorCount++;
+          }
+          else
+          {
+            dependencyMap[depNode] = rigidID;
+          }
+        }
+      }
+      if (errorCount > 0) log($"  [Validation Failed] Found {errorCount} double dependency errors.");
+    }
+
+    private static List<int> FindNodesInExpandedBox(Nodes nodes, List<Point3D> polygon, double margin, double toleranceZ)
     {
       var foundIDs = new List<int>();
 
       double minX = polygon.Min(p => p.X); double maxX = polygon.Max(p => p.X);
       double minY = polygon.Min(p => p.Y); double maxY = polygon.Max(p => p.Y);
+
+      double searchMinX = minX - margin; double searchMaxX = maxX + margin;
+      double searchMinY = minY - margin; double searchMaxY = maxY + margin;
+
       double avgZ = polygon.Average(p => p.Z);
       double minZ = avgZ - toleranceZ; double maxZ = avgZ + toleranceZ;
 
       foreach (var kv in nodes)
       {
         var p = kv.Value;
-        if (p.X < minX || p.X > maxX || p.Y < minY || p.Y > maxY || p.Z < minZ || p.Z > maxZ) continue;
+        bool insideX = (p.X >= searchMinX) && (p.X <= searchMaxX);
+        bool insideY = (p.Y >= searchMinY) && (p.Y <= searchMaxY);
+        bool insideZ = (toleranceZ == double.MaxValue) || ((p.Z >= minZ) && (p.Z <= maxZ));
 
-        if (IsPointInPolygon2D(p, polygon))
+        if (insideX && insideY && insideZ)
         {
           foundIDs.Add(kv.Key);
         }
       }
       return foundIDs;
-    }
-
-    private static bool IsPointInPolygon2D(Point3D p, List<Point3D> polygon)
-    {
-      bool inside = false;
-      int j = polygon.Count - 1;
-      for (int i = 0; i < polygon.Count; i++)
-      {
-        if ((polygon[i].Y > p.Y) != (polygon[j].Y > p.Y) &&
-            (p.X < (polygon[j].X - polygon[i].X) * (p.Y - polygon[i].Y) / (polygon[j].Y - polygon[i].Y) + polygon[i].X))
-        {
-          inside = !inside;
-        }
-        j = i;
-      }
-      return inside;
     }
   }
 }
