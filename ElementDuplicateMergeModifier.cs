@@ -160,7 +160,7 @@ namespace MooringFitting2026.Modifier.ElementModifier
         if (props.Contains(pid))
         {
           var p = props[pid];
-          type = p.Type;
+          type = p.Type.ToUpper(); // 대소문자 무시
           var dim = p.Dim;
 
           if (dim.Count > 0) a = dim[0];
