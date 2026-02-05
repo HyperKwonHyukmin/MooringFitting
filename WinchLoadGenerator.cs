@@ -85,9 +85,9 @@ namespace MooringFitting2026.Services.Load
 
             // 벡터 생성 (Ton -> kgf/N * 1000)
             Vector3D forceVec = new Vector3D(
-                fx_ton * 1000.0,
-                fy_ton * 1000.0,
-                fz_ton * 1000.0
+                fx_ton * 10000.0,
+                fy_ton * 10000.0,
+                fz_ton * 10000.0
             );
 
             loads.Add(new ForceLoad(targetNodeID, currentLoadId, forceVec));
