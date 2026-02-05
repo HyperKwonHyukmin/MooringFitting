@@ -28,6 +28,8 @@ namespace MooringFitting2026
       //string DataLoad = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part3\MooringFittingDataLoad_3414.csv";
 
 
+      bool RUN_NASTRAN_SOLVER = false;
+
       // 본 코드 진행
       string CsvFolderPath = Path.GetDirectoryName(Data);
 
@@ -38,7 +40,7 @@ namespace MooringFitting2026
       // [옵션 설정 가이드]
       // .Create()로 시작하여 필요한 설정을 체이닝(Chaining) 하세요.
       var globalOptions = InspectorOptions.Create()
-        .RunUntil(ProcessingStage.Stage01_CollinearOverlap) // 여기서 실행 단계 지정
+        .RunUntil(ProcessingStage.Stage06_LoadGeneration) // 여기서 실행 단계 지정
         // 실행 STAGE 지정 목록
         //Stage01_CollinearOverlap | Stage02_SplitByNodes | Stage03_IntersectionSplit |
         //Stage03_5_DuplicateMerge | Stage04_Extension | Stage05_MeshRefinement | Stage06_LoadGeneration
@@ -65,14 +67,14 @@ namespace MooringFitting2026
 
       // 파이프라인 생성 및 실행
       var pipeline = new FeModelProcessPipeline(
-          feModelContext,
-          rawStructureData,
-          winchData,
-          globalOptions,  // ★ 공통 옵션 주입
-          CsvFolderPath
-      );
+        feModelContext,
+        rawStructureData,
+        winchData,
+        globalOptions,
+        CsvFolderPath,
+        RUN_NASTRAN_SOLVER 
+             );
       pipeline.Run();
     }
   }
 }
-
