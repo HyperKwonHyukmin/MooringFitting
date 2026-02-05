@@ -3,6 +3,7 @@ using MooringFitting2026.Exporters;
 using MooringFitting2026.Inspector;
 using MooringFitting2026.Model.Entities;
 using MooringFitting2026.Modifier.ElementModifier;
+using MooringFitting2026.Services.Load;
 using MooringFitting2026.Utils;
 using System;
 using System.Collections.Generic;
@@ -27,12 +28,12 @@ namespace MooringFitting2026.Exporters
 
     // 생성자 함수
     public BdfBuilder(
-              int Sol,
-              FeModelContext FeModelContext,
-              List<int> spcList = null,
-              Dictionary<int, MooringFittingConnectionModifier.RigidInfo> rigidMap = null,
-              List<ForceLoad> forceLoads = null, // [추가] 인자
-              int loadCase = 1)
+      int Sol,
+      FeModelContext FeModelContext,
+      List<int> spcList = null,
+      Dictionary<int, MooringFittingConnectionModifier.RigidInfo> rigidMap = null,
+      List<ForceLoad> forceLoads = null, // [추가] 인자
+      int loadCase = 1)
     {
       this.sol = Sol;
       this.feModelContext = FeModelContext;
@@ -73,6 +74,7 @@ namespace MooringFitting2026.Exporters
     }
 
     // 02. 출력결과 종류 설정, LoadCase 설정
+    // [수정된 부분] 02. 출력결과 종류 설정, LoadCase 설정
     public void CaseControlSection()
     {
       BdfLines.Add("DISPLACEMENT = ALL");
@@ -80,13 +82,37 @@ namespace MooringFitting2026.Exporters
       BdfLines.Add("SPCFORCES = ALL");
       BdfLines.Add("STRESS = ALL");
 
-      for (int i = 1; i <= LoadCase; i++)
+      // 1. 실제로 존재하는 Load ID 목록 추출 (중복 제거 및 정렬)
+      List<int> activeLoadIds;
+
+      if (this.ForceLoads != null && this.ForceLoads.Count > 0)
       {
-        BdfLines.Add($"SUBCASE {i}");
+        // ForceLoads에 데이터가 있다면 그 ID들을 사용 (예: 2, 3, 4...)
+        activeLoadIds = this.ForceLoads
+                        .Select(f => f.LoadCaseID)
+                        .Distinct()
+                        .OrderBy(id => id)
+                        .ToList();
+      }
+      else
+      {
+        // 하중 데이터가 없는 경우(Shape만 볼 때 등), 생성자에서 받은 개수만큼 1부터 생성
+        activeLoadIds = Enumerable.Range(1, this.LoadCase).ToList();
+      }
+
+      // 2. Subcase 생성
+      // subcaseIndex는 1부터 순차적으로 증가 (SUBCASE 1, SUBCASE 2...)
+      // targetLoadId는 실제 데이터의 ID 사용 (LOAD = 2, LOAD = 3...)
+      for (int i = 0; i < activeLoadIds.Count; i++)
+      {
+        int subcaseId = i + 1;
+        int targetLoadId = activeLoadIds[i];
+
+        BdfLines.Add($"SUBCASE {subcaseId}");
         BdfLines.Add("    ANALYSIS = STATICS");
-        BdfLines.Add($"    LABEL = Load Case {i}");
-        BdfLines.Add("    SPC = 1");
-        BdfLines.Add($"    LOAD = {i}");
+        BdfLines.Add($"    LABEL = Load Case {targetLoadId}");
+        BdfLines.Add("    SPC = 1");             // SPC는 1번 고정
+        BdfLines.Add($"    LOAD = {targetLoadId}"); // 실제 하중 ID (2부터 시작)
       }
 
       BdfLines.Add("BEGIN BULK");
@@ -230,7 +256,6 @@ namespace MooringFitting2026.Exporters
         // Row 1: [RBE2][EID][GN][CM][GM1][GM2][GM3][GM4][GM5][+]
         // Row 2: [+][GM6][GM7]...
         // -----------------------------------------------------------------------
-
         var sb = new StringBuilder();
 
         // 1. 첫 번째 줄 헤더 작성 (필드 1~4 사용)
@@ -301,7 +326,6 @@ namespace MooringFitting2026.Exporters
     public void LoadBulkSection()
     {
       if (this.ForceLoads == null || this.ForceLoads.Count == 0) return;
-      Console.WriteLine("ForceLoads 시작");
       foreach (var load in this.ForceLoads)
       {
         // FORCE Card Format:
@@ -311,7 +335,7 @@ namespace MooringFitting2026.Exporters
         // CID: Coord System (0 = Basic)
         // F: Scale Factor (1.0으로 두고 N1~N3에 실제 힘 성분 입력)
         // N1, N2, N3: Vector components
-        Console.WriteLine($"ForceLoads: {load}");
+       
 
         string line = $"{BdfFormatFields.FormatField("FORCE")}" +
                       $"{BdfFormatFields.FormatField(load.LoadCaseID, "right")}" +
