@@ -41,9 +41,9 @@ namespace MooringFitting2026.Modifier.ElementModifier
       var sbReport = new StringBuilder();
 
       // CSV 헤더 (메타 데이터)
-      sbReport.AppendLine("Report Type,Duplicate Element Merge Calculation Report");
+      sbReport.AppendLine("Report Type,Duplicate Element Merge Calculation Report (Ship Structure Adjusted)");
       sbReport.AppendLine($"Date,{DateTime.Now}");
-      sbReport.AppendLine("Description,Calculates equivalent stiffness (A/I/J) for overlapping elements based on their shape.");
+      sbReport.AppendLine("Description,Calculates stiffness for 'Deck+Stiffener' 1D Idealization.");
       sbReport.AppendLine(); // 빈 줄
 
       // 1. 중복 그룹 찾기
@@ -61,7 +61,7 @@ namespace MooringFitting2026.Modifier.ElementModifier
       int newPropCount = 0;
 
       // CSV 데이터 헤더
-      sbReport.AppendLine("GroupID,Nodes,ElementID,PropID,Type,Area(mm2),Izz(mm4),Iyy(mm4),J(mm4),Note");
+      sbReport.AppendLine("GroupID,Nodes,ElementID,PropID,Type,Mapped_Dimensions,Area(mm2),Izz(mm4),Iyy(mm4),J(mm4),Note");
 
       // 2. 각 그룹별 병합 수행
       int groupIndex = 1;
@@ -115,6 +115,19 @@ namespace MooringFitting2026.Modifier.ElementModifier
         groupIndex++;
       }
 
+      // [추가] Appendix: 선체 구조 매핑 설명
+      sbReport.AppendLine();
+      sbReport.AppendLine("===================================================================================");
+      sbReport.AppendLine("[Appendix] Dimension Mapping Logic (Ship Structure Idealization)");
+      sbReport.AppendLine("1. T-Type (Deck + T-Stiffener)");
+      sbReport.AppendLine("   - Input Order: [W_top] [H] [tw] [tf_top]");
+      sbReport.AppendLine("   - Interpretation: W_top=DeckWidth(750), H=StiffenerHeight");
+      sbReport.AppendLine();
+      sbReport.AppendLine("2. I-Type (Deck + I-Stiffener / Asymmetric)");
+      sbReport.AppendLine("   - Input Order: [H] [W_bot] [W_top] [tf_top] [tw] [tf_bot]");
+      sbReport.AppendLine("   - Interpretation: W_top=DeckWidth(750), W_bot=StiffenerFlange, H=TotalHeight");
+      sbReport.AppendLine("===================================================================================");
+
       // 5. 리포트 파일 저장 (UTF-8 BOM 포함)
       try
       {
@@ -131,7 +144,7 @@ namespace MooringFitting2026.Modifier.ElementModifier
     }
 
     /// <summary>
-    /// 실제 등가 강성 계산 로직 (형상별 공식 적용)
+    /// 실제 등가 강성 계산 로직 (선체 구조 전용 매핑 적용)
     /// </summary>
     private static MergedSectionResult CalculateEquivalentProperty(
         int groupIdx,
@@ -145,7 +158,6 @@ namespace MooringFitting2026.Modifier.ElementModifier
       double sumIyy = 0.0;
       double sumJ = 0.0;
 
-      // 그룹 정보 (노드 정보 추출)
       string nodeInfo = "Unknown";
       if (elementIDs.Count > 0 && allElements.Contains(elementIDs[0]))
       {
@@ -161,161 +173,166 @@ namespace MooringFitting2026.Modifier.ElementModifier
         double a = 0, izz = 0, iyy = 0, j = 0;
         string type = "Unknown";
         string note = "Raw";
+        string dimStr = "";
         int pid = ele.PropertyID;
 
         if (props.Contains(pid))
         {
           var p = props[pid];
-          type = p.Type.ToUpper(); // 대소문자 무시
+          type = p.Type.ToUpper();
           var dim = p.Dim;
 
-          // [수정된 로직] 형상별 물성치 계산
           if (type == "PBEAM" || type == "EQUIV_PBEAM")
           {
-            // PBEAM은 이미 A, I, I, J 값이 들어있음 (직접 값)
             if (dim.Count > 0) a = dim[0];
             if (dim.Count > 1) izz = dim[1];
             if (dim.Count > 2) iyy = dim[2];
             if (dim.Count > 3) j = dim[3];
-            note = "Direct Value";
+            dimStr = "Pre-calculated";
+            note = "Direct";
           }
-          else if (type == "T") // T-Bar
+          // -----------------------------------------------------------------------
+          // [수정] 선체 구조용 T-Type 매핑 (W가 먼저 옴: Deck Width)
+          // Data: 750, 228.6, 10, 18 -> W_top, H, tw, tf_top
+          // -----------------------------------------------------------------------
+          else if (type == "T")
           {
-            // Dim: [0]H, [1]W, [2]tw, [3]tf
             if (dim.Count >= 4)
             {
-              double H = dim[0]; double W = dim[1];
-              double tw = dim[2]; double tf = dim[3];
+              double W_top = dim[0]; // Deck Width (750)
+              double H = dim[1];     // Height (228.6)
+              double tw = dim[2];    // Web Thickness (10)
+              double tf_top = dim[3]; // Deck Thickness (18)
 
-              // 1. 단면적 (A)
-              a = (H - tf) * tw + W * tf;
+              dimStr = $"W_top={W_top}; H={H}; tw={tw}; tf_top={tf_top}";
 
-              // 2. 도심 (Centroid Y from bottom of web)
-              // Web height = H - tf
-              double h_web = H - tf;
-              double area_web = h_web * tw;
-              double area_flange = W * tf;
+              // Area
+              a = (W_top * tf_top) + ((H - tf_top) * tw);
 
-              double y_web = h_web / 2.0;
-              double y_flange = h_web + tf / 2.0;
+              // Centroid (from bottom)
+              double h_web = H - tf_top;
+              double A_web = h_web * tw;
+              double y_web = h_web / 2.0; // Web center
 
-              double y_bar = (area_web * y_web + area_flange * y_flange) / a;
+              double A_flange = W_top * tf_top;
+              double y_flange = h_web + tf_top / 2.0; // Flange center
 
-              // 3. 관성모멘트 Izz (Strong Axis - Horizontal bending axis)
-              double I_web_own = (tw * Math.Pow(h_web, 3)) / 12.0;
-              double I_flange_own = (W * Math.Pow(tf, 3)) / 12.0;
+              double y_bar = (A_web * y_web + A_flange * y_flange) / a;
 
-              double I_web_shift = area_web * Math.Pow(y_web - y_bar, 2);
-              double I_flange_shift = area_flange * Math.Pow(y_flange - y_bar, 2);
+              // Izz (Strong Axis)
+              double I_web = (tw * Math.Pow(h_web, 3)) / 12.0 + A_web * Math.Pow(y_web - y_bar, 2);
+              double I_flange = (W_top * Math.Pow(tf_top, 3)) / 12.0 + A_flange * Math.Pow(y_flange - y_bar, 2);
+              izz = I_web + I_flange;
 
-              izz = I_web_own + I_web_shift + I_flange_own + I_flange_shift;
-
-              // 4. 관성모멘트 Iyy (Weak Axis - Vertical bending axis)
-              // Web is centered, Flange is centered
+              // Iyy (Weak Axis) - Symmetric about web
               double Iyy_web = (h_web * Math.Pow(tw, 3)) / 12.0;
-              double Iyy_flange = (tf * Math.Pow(W, 3)) / 12.0;
+              double Iyy_flange = (tf_top * Math.Pow(W_top, 3)) / 12.0;
               iyy = Iyy_web + Iyy_flange;
 
-              // 5. 비틀림 상수 J (Open Section Approximation)
-              j = (1.0 / 3.0) * (W * Math.Pow(tf, 3) + h_web * Math.Pow(tw, 3));
+              // J (St. Venant) - Open Section Summation
+              j = (1.0 / 3.0) * (W_top * Math.Pow(tf_top, 3) + h_web * Math.Pow(tw, 3));
 
-              note = "Calculated_T";
+              note = "Ship_T (Deck+Web)";
             }
           }
-          else if (type == "I") // I-Beam
+          // -----------------------------------------------------------------------
+          // [수정] 선체 구조용 I-Type 매핑 (Asymmetric, Deck + I-Stiffener)
+          // Data: 154.9, 90, 750, 20... -> H, W_bot, W_top, tf_top, tw, tf_bot
+          // -----------------------------------------------------------------------
+          else if (type == "I")
           {
-            // Dim: [0]H, [1]W, [2]tw, [3]tf, [4]W_bot?, [5]tf_bot? (가정)
-            if (dim.Count >= 4)
+            if (dim.Count >= 6) // Ensure we have all dims
             {
-              double H = dim[0]; double W_top = dim[1];
-              double tw = dim[2]; double tf_top = dim[3];
+              double H = dim[0];      // 154.9
+              double W_bot = dim[1];  // 90
+              double W_top = dim[2];  // Deck Width (750)
+              double tf_top = dim[3]; // Deck Thickness (20)
+              double tw = dim[4];     // 10
+              double tf_bot = dim[5]; // 10
 
-              // 하부 플랜지 정보가 없으면 상부와 대칭 가정
-              double W_bot = (dim.Count > 4) ? dim[4] : W_top;
-              double tf_bot = (dim.Count > 5) ? dim[5] : tf_top;
+              dimStr = $"H={H}; Wb={W_bot}; Wt={W_top}; tft={tf_top}; tw={tw}; tfb={tf_bot}";
 
               double h_web = H - tf_top - tf_bot;
+              if (h_web < 0) h_web = 0; // Safety check
 
-              // 1. 단면적
-              a = (W_top * tf_top) + (W_bot * tf_bot) + (h_web * tw);
-
-              // 2. 도심 및 Izz (정밀 계산)
-              // Y reference from bottom
-              double y_botFlange = tf_bot / 2.0;
-              double y_web = tf_bot + h_web / 2.0;
-              double y_topFlange = tf_bot + h_web + tf_top / 2.0;
-
+              // Area
+              double A_top = W_top * tf_top;
               double A_bot = W_bot * tf_bot;
               double A_web = h_web * tw;
-              double A_top = W_top * tf_top;
+              a = A_top + A_bot + A_web;
 
-              double y_bar = (A_bot * y_botFlange + A_web * y_web + A_top * y_topFlange) / a;
+              // Centroid (from bottom)
+              double y_bot = tf_bot / 2.0;
+              double y_web = tf_bot + h_web / 2.0;
+              double y_top = tf_bot + h_web + tf_top / 2.0;
 
-              // Izz Calculation
-              double Izz_bot = (W_bot * Math.Pow(tf_bot, 3)) / 12.0 + A_bot * Math.Pow(y_botFlange - y_bar, 2);
+              double y_bar = (A_bot * y_bot + A_web * y_web + A_top * y_top) / a;
+
+              // Izz (Strong Axis)
+              double Izz_bot = (W_bot * Math.Pow(tf_bot, 3)) / 12.0 + A_bot * Math.Pow(y_bot - y_bar, 2);
               double Izz_web = (tw * Math.Pow(h_web, 3)) / 12.0 + A_web * Math.Pow(y_web - y_bar, 2);
-              double Izz_top = (W_top * Math.Pow(tf_top, 3)) / 12.0 + A_top * Math.Pow(y_topFlange - y_bar, 2);
+              double Izz_top = (W_top * Math.Pow(tf_top, 3)) / 12.0 + A_top * Math.Pow(y_top - y_bar, 2);
               izz = Izz_bot + Izz_web + Izz_top;
 
-              // Iyy Calculation (Symmetric about Y-axis assumed)
+              // Iyy (Weak Axis)
               double Iyy_bot = (tf_bot * Math.Pow(W_bot, 3)) / 12.0;
               double Iyy_web = (h_web * Math.Pow(tw, 3)) / 12.0;
               double Iyy_top = (tf_top * Math.Pow(W_top, 3)) / 12.0;
               iyy = Iyy_bot + Iyy_web + Iyy_top;
 
-              // J Calculation
+              // J
               j = (1.0 / 3.0) * (W_top * Math.Pow(tf_top, 3) + W_bot * Math.Pow(tf_bot, 3) + h_web * Math.Pow(tw, 3));
 
-              note = "Calculated_I";
+              note = "Ship_I (Asym)";
+            }
+            else
+            {
+              // 데이터 부족 시 Fallback (로그에 남김)
+              dimStr = $"Missing Data (Count={dim.Count})";
+              note = "Error_I (Dim<6)";
             }
           }
-          else if (type == "ANGLE" || type == "L") // Angle
+          else if (type == "ANGLE" || type == "L")
           {
+            // Angle의 경우 표준 매핑 유지 (필요 시 수정 가능)
             if (dim.Count >= 4)
             {
               double H = dim[0]; double W = dim[1];
               double t1 = dim[2]; double t2 = dim[3];
-
-              // 1. Area
-              // Assume Leg 1 is H, Leg 2 is W. 
-              // Overlap area needs care. Usually (H * t1) + (W - t1) * t2
+              dimStr = $"H={H}; W={W}; t1={t1}; t2={t2}";
               a = (H * t1) + ((W - t1) * t2);
-
-              // Approximate Izz/Iyy for generic L (Simplified)
-              // For precise calculation, parallel axis theorem is needed for L-shape centroid.
-              // Here we use simplified estimation to avoid zero stiffness.
-              izz = (t1 * Math.Pow(H, 3)) / 12.0 + ((W - t1) * Math.Pow(t2, 3)) / 12.0; // Very rough
-              iyy = (t2 * Math.Pow(W, 3)) / 12.0 + ((H - t2) * Math.Pow(t1, 3)) / 12.0; // Very rough
-
-              j = (1.0 / 3.0) * (H * Math.Pow(t1, 3) + W * Math.Pow(t2, 3)); // Rough
-              note = "Calculated_L(Approx)";
+              izz = (t1 * Math.Pow(H, 3)) / 12.0;
+              iyy = (t2 * Math.Pow(W, 3)) / 12.0;
+              j = (1.0 / 3.0) * (H * Math.Pow(t1, 3) + W * Math.Pow(t2, 3));
+              note = "Angle";
             }
           }
-          else if (type == "FLATBAR" || type == "BAR") // Flat Bar
+          else if (type == "FLATBAR" || type == "BAR")
           {
             if (dim.Count >= 2)
             {
               double H = dim[0]; double T = dim[1];
+              dimStr = $"H={H}; T={T}";
               a = H * T;
               izz = (T * Math.Pow(H, 3)) / 12.0;
               iyy = (H * Math.Pow(T, 3)) / 12.0;
               j = (1.0 / 3.0) * H * Math.Pow(T, 3);
-              note = "Calculated_FB";
+              note = "FlatBar";
             }
           }
           else
           {
-            // Fallback: If type is unknown, just use dimensions as raw properties (Legacy behavior)
+            dimStr = "Unknown Type";
             if (dim.Count > 0) a = dim[0];
             if (dim.Count > 1) izz = dim[1];
             if (dim.Count > 2) iyy = dim[2];
             if (dim.Count > 3) j = dim[3];
-            note = $"Fallback({type})";
+            note = "Direct_Fallback";
           }
         }
 
         // CSV 로그 기록
-        csv.AppendLine($"{groupIdx},{nodeInfo},{eid},{pid},{type},{a:F4},{izz:F4},{iyy:F4},{j:F4},{note}");
+        csv.AppendLine($"{groupIdx},{nodeInfo},{eid},{pid},{type},{dimStr},{a:F4},{izz:F4},{iyy:F4},{j:F4},{note}");
 
         sumArea += a;
         sumIzz += izz;
@@ -323,9 +340,8 @@ namespace MooringFitting2026.Modifier.ElementModifier
         sumJ += j;
       }
 
-      // 합계 행 추가
-      csv.AppendLine($"{groupIdx},{nodeInfo},MERGED,NEW,EQUIV,{sumArea:F4},{sumIzz:F4},{sumIyy:F4},{sumJ:F4},Total Sum");
-
+      // 합계 행
+      csv.AppendLine($"{groupIdx},{nodeInfo},MERGED,NEW,EQUIV,,{sumArea:F4},{sumIzz:F4},{sumIyy:F4},{sumJ:F4},Total Sum");
       return new MergedSectionResult(sumArea, sumIzz, sumIyy, sumJ);
     }
 
