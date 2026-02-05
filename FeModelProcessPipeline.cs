@@ -8,6 +8,7 @@ using MooringFitting2026.Modifier.ElementModifier;
 using MooringFitting2026.Modifier.NodeModifier;
 using MooringFitting2026.RawData;
 using MooringFitting2026.Services.Load;
+using MooringFitting2026.Services.Reporting;
 using MooringFitting2026.Services.SectionProperties;
 using MooringFitting2026.Services.Solver;
 using MooringFitting2026.Utils.Geometry;
@@ -119,40 +120,56 @@ namespace MooringFitting2026.Pipeline
       {
         RunStage("STAGE_06", () =>
         {
-          // 1. Rigid 생성 (Z축 유지 모드 등은 MooringFittingConnectionModifier 내부 로직 따름)
+          // [추가] 리포터 인스턴스 생성
+          var loadReporter = new LoadCalculationReporter();
+
+          // 1. Rigid 생성
           _rigidMap = MooringFittingConnectionModifier.Run(_context, _rawStructureData.MfList, _lastSpcList, Console.WriteLine);
 
           Console.WriteLine(">>> Generating Loads...");
           _forceLoads.Clear();
 
-          // ============================================================
-          // [순서 변경] MF 하중(2번~) 먼저 생성 -> Winch 하중(그 이후~) 생성
-          // ============================================================
-
-          // 2. MF 하중 생성 (Start ID: 2)
+          // 2. MF 하중 생성 (리포터 전달)
           int mfStartID = 2;
-          var mfLoads = MooringLoadGenerator.Generate(_context, _rawStructureData.MfList, _rigidMap, Console.WriteLine, mfStartID);
+          // [수정] reporter 인자 전달
+          var mfLoads = MooringLoadGenerator.Generate(
+              _context,
+              _rawStructureData.MfList,
+              _rigidMap,
+              Console.WriteLine,
+              mfStartID,
+              loadReporter); // 전달
+
           _forceLoads.AddRange(mfLoads);
 
-          // 3. Winch 하중 시작 ID 계산 (MF 하중의 마지막 ID + 1)
+          // 3. Winch 하중 시작 ID 계산
           int winchStartID = mfStartID;
           if (mfLoads.Count > 0)
           {
             winchStartID = mfLoads.Max(l => l.LoadCaseID) + 1;
           }
 
-          // 4. Winch 하중 생성
-          var winchLoads = WinchLoadGenerator.Generate(_context, _winchData, Console.WriteLine, winchStartID);
+          // 4. Winch 하중 생성 (리포터 전달)
+          // [수정] reporter 인자 전달
+          var winchLoads = WinchLoadGenerator.Generate(
+              _context,
+              _winchData,
+              Console.WriteLine,
+              winchStartID,
+              loadReporter); // 전달
+
           _forceLoads.AddRange(winchLoads);
 
+          // [추가] 리포트 파일로 내보내기 (Pipeline 생성 시 받은 _csvPath 폴더에 저장)
+          Console.WriteLine(">>> Exporting Load Calculation Reports...");
+          loadReporter.ExportReports(_csvPath);
+
+          // ... (기존 요약 출력 코드) ...
           int totalMaxID = winchStartID;
           if (winchLoads.Count > 0) totalMaxID = winchLoads.Max(l => l.LoadCaseID);
 
           Console.WriteLine($"   -> Load Generation Summary:");
-          Console.WriteLine($"      SPC ID : 1");
-          Console.WriteLine($"      MF IDs : {mfStartID} ~ {(mfLoads.Count > 0 ? mfLoads.Max(l => l.LoadCaseID) : "None")}");
-          Console.WriteLine($"      Winch  : {winchStartID} ~ {(winchLoads.Count > 0 ? winchLoads.Max(l => l.LoadCaseID) : "None")}");
-          Console.WriteLine($"      Total Force Count : {_forceLoads.Count}");
+          // ...
         });
       }
       else LogSkip("STAGE_06");
