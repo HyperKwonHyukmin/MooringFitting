@@ -170,15 +170,25 @@ namespace MooringFitting2026.Pipeline
     // ... (FeModelProcessPipeline.cs 내부)
 
     // [수정] RunStage 메서드 전체
+    // [수정] RunStage 메서드 재작성
     private void RunStage(string stageName, Action action, string customExportName = null)
     {
-      Console.WriteLine($"================ {stageName} =================");
+      // [수정 1] 디버그 모드일 때만 스테이지 헤더 출력
+      if (_inspectOpt.DebugMode)
+      {
+        Console.WriteLine($"================ {stageName} =================");
+      }
+
       action();
 
       List<int> spcList;
       if (stageName.Equals("STAGE_06", StringComparison.OrdinalIgnoreCase))
       {
-        Console.WriteLine("   -> [Info] Skipping Inspector for STAGE_06 to preserve Rigid Independent Nodes.");
+        // [수정 2] 안내 메시지도 디버그 모드 확인
+        if (_inspectOpt.DebugMode)
+        {
+          Console.WriteLine("   -> [Info] Skipping Inspector for STAGE_06 to preserve Rigid Independent Nodes.");
+        }
         spcList = _lastSpcList;
       }
       else
@@ -193,9 +203,14 @@ namespace MooringFitting2026.Pipeline
 
       // 2. BDF 내보내기
       BdfExporter.Export(_context, _csvPath, finalFileName, spcList, _rigidMap, _forceLoads);
-      Console.WriteLine($"   -> Exported: {finalFileName}.bdf");
 
-      // 3. [수정됨] Solver 실행 및 결과 처리 로직 (STAGE_06 전용)
+      // [수정 3] 파일 저장 알림도 디버그 모드 확인
+      if (_inspectOpt.DebugMode)
+      {
+        Console.WriteLine($"   -> Exported: {finalFileName}.bdf");
+      }
+
+      // 3. Solver 실행 및 결과 처리 로직 (STAGE_06 전용)
       if (stageName.Equals("STAGE_06", StringComparison.OrdinalIgnoreCase))
       {
         string f06Path = Path.Combine(_csvPath, finalFileName + ".f06");
@@ -204,25 +219,41 @@ namespace MooringFitting2026.Pipeline
         // (A) Solver 실행 모드인 경우
         if (_runSolver)
         {
-          Console.WriteLine(">>> [Solver] Launching Nastran Solver...");
-          NastranSolverService.RunNastran(bdfFullPath, Console.WriteLine);
-          f06Exists = File.Exists(f06Path); // 실행 후 생성되었는지 확인
+          // [수정 4] 솔버 시작 알림 제어
+          if (_inspectOpt.DebugMode)
+          {
+            Console.WriteLine(">>> [Solver] Launching Nastran Solver...");
+          }
+
+          // [수정 5] 솔버 로그 억제 (디버그 모드 아니면 빈 Action 전달)
+          Action<string> solverLogger = _inspectOpt.DebugMode ? (Action<string>)Console.WriteLine : (msg) => { };
+          NastranSolverService.RunNastran(bdfFullPath, solverLogger);
+
+          f06Exists = File.Exists(f06Path);
         }
         // (B) Solver 스킵 모드인 경우
         else
         {
-          Console.WriteLine(">>> [Solver] Skipped (Option is false). Checking for existing .f06 file...");
-          f06Exists = File.Exists(f06Path); // 기존 파일이 있는지 확인
+          if (_inspectOpt.DebugMode)
+          {
+            Console.WriteLine(">>> [Solver] Skipped (Option is false). Checking for existing .f06 file...");
+          }
+          f06Exists = File.Exists(f06Path);
         }
 
-        // 4. 결과 파일(.f06) 검사 (있을 경우에만)
+        // 4. 결과 파일(.f06) 검사
         if (f06Exists)
         {
-          Console.WriteLine($">>> [Result] Scanning {Path.GetFileName(f06Path)} for errors...");
+          // [수정 6] 결과 분석 시작 알림 제어
+          if (_inspectOpt.DebugMode)
+          {
+            Console.WriteLine($">>> [Result] Scanning {Path.GetFileName(f06Path)} for errors...");
+          }
 
+          // F06ResultScanner가 존재한다고 가정 (업로드된 파일 내용 기반)
           if (F06ResultScanner.HasFatalError(f06Path, out string errorMsg))
           {
-            // Fatal 에러 발견 시
+            // [유지] Fatal Error는 중요한 정보이므로 디버그 모드와 상관없이 출력 (색상 강조)
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine(errorMsg);
             Console.ResetColor();
@@ -230,18 +261,20 @@ namespace MooringFitting2026.Pipeline
           }
           else
           {
-            // 정상 (다음 단계 준비)
-            Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("   -> No Fatal Errors found. Proceeding to result parsing...");
-            Console.ResetColor();
+            // [수정 7] 성공 메시지는 디버그 모드에서만 (또는 필요시 항상 출력)
+            if (_inspectOpt.DebugMode)
+            {
+              Console.ForegroundColor = ConsoleColor.Green;
+              Console.WriteLine("   -> No Fatal Errors found. Proceeding to result parsing...");
+              Console.ResetColor();
+            }
 
-            // TODO: 여기서 결과 파싱 로직 호출 (ResultParser)
-            // ParseResults(f06Path);
+            // TODO: 결과 파싱 로직 호출
           }
         }
         else
         {
-          // 파일이 없는 경우 (경고 출력)
+          // [유지] 파일 없음 경고는 중요하므로 출력 유지
           Console.ForegroundColor = ConsoleColor.Yellow;
           Console.WriteLine($"   [Warning] Result file not found: {Path.GetFileName(f06Path)}");
           Console.WriteLine("   -> Skipping result parsing. Run solver or check file path.");
