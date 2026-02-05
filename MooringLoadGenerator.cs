@@ -1,93 +1,276 @@
+using MooringFitting2026.Exporters;
+using MooringFitting2026.Extensions;
+using MooringFitting2026.Inspector;
+using MooringFitting2026.Inspector.ElementInspector;
+using MooringFitting2026.Inspector.NodeInspector;
 using MooringFitting2026.Model.Entities;
-using MooringFitting2026.Model.Geometry;
 using MooringFitting2026.Modifier.ElementModifier;
+using MooringFitting2026.Modifier.NodeModifier;
 using MooringFitting2026.RawData;
-using MooringFitting2026.Services.Reporting; // [추가] Namespace
+using MooringFitting2026.Services.Load;
+using MooringFitting2026.Services.Reporting;
+using MooringFitting2026.Services.SectionProperties;
+using MooringFitting2026.Services.Solver;
 using MooringFitting2026.Utils.Geometry;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 
-namespace MooringFitting2026.Services.Load
+namespace MooringFitting2026.Pipeline
 {
-  public static class MooringLoadGenerator
+  public class FeModelProcessPipeline
   {
-    // [수정] 메서드 시그니처에 reporter 추가 (null 허용)
-    public static List<ForceLoad> Generate(
+    private readonly FeModelContext _context;
+    private readonly RawStructureData _rawStructureData;
+    private readonly WinchData _winchData;
+    private readonly InspectorOptions _inspectOpt;
+    private readonly string _csvPath;
+    private readonly bool _runSolver;
+
+    private Dictionary<int, MooringFittingConnectionModifier.RigidInfo> _rigidMap
+        = new Dictionary<int, MooringFittingConnectionModifier.RigidInfo>();
+    private List<ForceLoad> _forceLoads = new List<ForceLoad>();
+    private List<int> _lastSpcList = new List<int>();
+
+    public FeModelProcessPipeline(
         FeModelContext context,
-        List<MFData> mfList,
-        Dictionary<int, MooringFittingConnectionModifier.RigidInfo> rigidMap,
-        Action<string> log,
-        int startId,
-        LoadCalculationReporter reporter = null) // [추가]
+        RawStructureData rawStructureData,
+        WinchData winchData,
+        InspectorOptions inspectOpt,
+        string CsvPath,
+        bool runSolver = true)
     {
-      var loads = new List<ForceLoad>();
-      var nodes = context.Nodes;
-      int currentLoadId = startId;
+      _context = context ?? throw new ArgumentNullException(nameof(context));
+      _rawStructureData = rawStructureData;
+      _winchData = winchData;
+      _inspectOpt = inspectOpt ?? InspectorOptions.Default;
+      _csvPath = CsvPath;
+      _runSolver = runSolver;
+    }
 
-      log($"[Load Gen] Starting Force Generation for MF (Start ID: {startId})...");
+    public void Run()
+    {
+      Console.WriteLine("\n[Pipeline Started] Processing FE Model...");
 
-      var mfToRigidMap = rigidMap.Values.ToDictionary(r => r.RefID, r => r);
+      Console.WriteLine(">>> [Preprocessing] Normalizing Z-Plane (2D Conversion)...");
+      NodeZPlaneNormalizeModifier.Run(_context);
 
-      foreach (var mf in mfList)
+      ExportBaseline();
+      RunStagedPipeline();
+    }
+
+    private void ExportBaseline()
+    {
+      string stageName = "STAGE_00";
+      Console.WriteLine($"================ {stageName} =================");
+      var freeEndNodes = StructuralSanityInspector.Inspect(_context, _inspectOpt);
+      _lastSpcList = freeEndNodes;
+      BdfExporter.Export(_context, _csvPath, stageName, freeEndNodes);
+    }
+
+    private void RunStagedPipeline()
+    {
+      // Stage 01 ~ 05 (기존과 동일)
+      if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage01_CollinearOverlap))
+        RunStage("STAGE_01", () => ElementCollinearOverlapGroupRun(_inspectOpt.DebugMode));
+      else LogSkip("STAGE_01");
+
+      if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage02_SplitByNodes))
+        RunStage("STAGE_02", () => ElementSplitByExistingNodesRun(_inspectOpt.DebugMode));
+      else LogSkip("STAGE_02");
+
+      if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage03_IntersectionSplit))
       {
-        if (!mfToRigidMap.TryGetValue(mf.ID, out var rigidInfo))
+        RunStage("STAGE_03", () => {
+          ElementIntersectionSplitRun(_inspectOpt.DebugMode);
+          CollapseShortElementsRun(1.0);
+        });
+      }
+      else LogSkip("STAGE_03");
+
+      if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage03_5_DuplicateMerge))
+        RunStage("STAGE_03_5", () => ElementDuplicateMergeRun(_inspectOpt.DebugMode));
+      else LogSkip("STAGE_03_5");
+
+      if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage04_Extension))
+      {
+        RunStage("STAGE_04", () => {
+          var extendOpt = new ElementExtendToBBoxIntersectAndSplitModifier.Options
+          { SearchRatio = 1.2, DefaultSearchDist = 50.0, IntersectionTolerance = 1.0, GridCellSize = 50.0, Debug = _inspectOpt.DebugMode };
+          var result = ElementExtendToBBoxIntersectAndSplitModifier.Run(_context, extendOpt, Console.WriteLine);
+          Console.WriteLine($"[Stage 04] Extended: {result.SuccessConnections} elements.");
+          CollapseShortElementsRun(1.0);
+        });
+      }
+      else LogSkip("STAGE_04");
+
+      if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage05_MeshRefinement))
+      {
+        RunStage("STAGE_05", () => {
+          var meshOpt = new ElementMeshRefinementModifier.Options { TargetMeshSize = 500.0, Debug = _inspectOpt.DebugMode };
+          var result = ElementMeshRefinementModifier.Run(_context, meshOpt, Console.WriteLine);
+          Console.WriteLine($"[Stage 05] Meshing Completed. {result.ElementsRefined} elements refined.");
+        });
+      }
+      else LogSkip("STAGE_05");
+
+      // [수정된 Stage 06]
+      if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage06_LoadGeneration))
+      {
+        RunStage("STAGE_06", () =>
         {
-          // [추가] 실패 로그 기록 (선택 사항)
-          reporter?.AddMfEntry("MF", mf.ID, -1, -1, mf.SWL, mf.a, mf.c, new Vector3D(0, 0, 0), "Skipped (No Rigid Info)");
-          continue;
-        }
+          // [추가] 리포터 인스턴스 생성
+          var loadReporter = new LoadCalculationReporter();
 
-        var depPoints = new List<Point3D>();
-        foreach (var nid in rigidInfo.DependentNodeIDs)
-        {
-          if (nodes.Contains(nid)) depPoints.Add(nodes[nid]);
-        }
+          // 1. Rigid 생성
+          _rigidMap = MooringFittingConnectionModifier.Run(_context, _rawStructureData.MfList, _lastSpcList, Console.WriteLine);
 
-        if (depPoints.Count < 3)
-        {
-          reporter?.AddMfEntry("MF", mf.ID, -1, rigidInfo.IndependentNodeID, mf.SWL, mf.a, mf.c, new Vector3D(0, 0, 0), "Skipped (Not enough nodes)");
-          continue;
-        }
+          Console.WriteLine(">>> Generating Loads...");
+          _forceLoads.Clear();
 
-        try
-        {
-          double loadVal = mf.SWL * 1000.0; // Ton -> kgf
+          // 2. MF 하중 생성 (리포터 전달)
+          int mfStartID = 2;
+          // [수정] reporter 인자 전달
+          var mfLoads = MooringLoadGenerator.Generate(
+              _context,
+              _rawStructureData.MfList,
+              _rigidMap,
+              Console.WriteLine,
+              mfStartID,
+              loadReporter); // 전달
 
-          // [기존 로직] 하중 벡터 계산
-          Vector3D forceVec = LoadCalculator.CalculateGlobalForceOnSlantedDeck(
-              depPoints,
-              loadVal,
-              mf.a, // Horizontal Angle
-              mf.c  // Vertical Angle
-          );
+          _forceLoads.AddRange(mfLoads);
 
-          loads.Add(new ForceLoad(rigidInfo.IndependentNodeID, currentLoadId, forceVec));
+          // 3. Winch 하중 시작 ID 계산
+          int winchStartID = mfStartID;
+          if (mfLoads.Count > 0)
+          {
+            winchStartID = mfLoads.Max(l => l.LoadCaseID) + 1;
+          }
 
-          // [추가] 계산 성공 시 리포트에 상세 기록
-          reporter?.AddMfEntry(
-              "MF",
-              mf.ID,
-              currentLoadId,
-              rigidInfo.IndependentNodeID,
-              mf.SWL,   // Input Ton
-              mf.a,     // Input Horiz Angle
-              mf.c,     // Input Vert Angle
-              forceVec, // Calculated Vector
-              "Success"
-          );
+          // 4. Winch 하중 생성 (리포터 전달)
+          // [수정] reporter 인자 전달
+          var winchLoads = WinchLoadGenerator.Generate(
+              _context,
+              _winchData,
+              Console.WriteLine,
+              winchStartID,
+              loadReporter); // 전달
 
-          currentLoadId++;
-        }
-        catch (Exception ex)
-        {
-          log($"  [Error] MF '{mf.ID}': {ex.Message}");
-          // [추가] 에러 기록
-          reporter?.AddMfEntry("MF", mf.ID, -1, rigidInfo.IndependentNodeID, mf.SWL, mf.a, mf.c, new Vector3D(0, 0, 0), $"Error: {ex.Message}");
-        }
+          _forceLoads.AddRange(winchLoads);
+
+          // [추가] 리포트 파일로 내보내기 (Pipeline 생성 시 받은 _csvPath 폴더에 저장)
+          Console.WriteLine(">>> Exporting Load Calculation Reports...");
+          loadReporter.ExportReports(_csvPath);
+
+          // ... (기존 요약 출력 코드) ...
+          int totalMaxID = winchStartID;
+          if (winchLoads.Count > 0) totalMaxID = winchLoads.Max(l => l.LoadCaseID);
+
+          Console.WriteLine($"   -> Load Generation Summary:");
+          // ...
+        });
+      }
+      else LogSkip("STAGE_06");
+    }
+
+    private void LogSkip(string stageName)
+    {
+      Console.ForegroundColor = ConsoleColor.DarkGray;
+      Console.WriteLine($"--- Skipping {stageName} (Disabled in Options) ---");
+      Console.ResetColor();
+    }
+
+    private void RunStage(string stageName, Action action)
+    {
+      Console.WriteLine($"================ {stageName} =================");
+      action();
+
+      List<int> spcList;
+      if (stageName.Equals("STAGE_06", StringComparison.OrdinalIgnoreCase))
+      {
+        Console.WriteLine("   -> [Info] Skipping Inspector for STAGE_06 to preserve Rigid Independent Nodes.");
+        spcList = _lastSpcList;
+      }
+      else
+      {
+        spcList = StructuralSanityInspector.Inspect(_context, _inspectOpt);
+        _lastSpcList = spcList;
       }
 
-      return loads;
+      BdfExporter.Export(_context, _csvPath, stageName, spcList, _rigidMap, _forceLoads);
+
+      if (stageName.Equals("STAGE_06", StringComparison.OrdinalIgnoreCase) && _runSolver)
+      {
+        Console.WriteLine(">>> [Solver] Launching Nastran Solver...");
+        string bdfFullPath = Path.Combine(_csvPath, stageName + ".bdf");
+        NastranSolverService.RunNastran(bdfFullPath, Console.WriteLine);
+      }
+    }
+
+    // --- Private Logic Methods ---
+    private void ElementCollinearOverlapGroupRun(bool isDebug)
+    {
+      var overlapGroup = ElementCollinearOverlapGroupInspector.FindSegmentationGroups(_context, 3e-2, 20.0);
+      if (isDebug) Console.WriteLine($"   -> Found {overlapGroup.Count} overlapping groups.");
+      ElementCollinearOverlapAlignSplitModifier.Run(_context, overlapGroup, 0.05, 1e-3, isDebug, Console.WriteLine, false);
+    }
+    private void ElementSplitByExistingNodesRun(bool isDebug)
+    {
+      var opt = new ElementSplitByExistingNodesModifier.Options(
+          DistanceTol: 1.0, GridCellSize: 5.0, SnapNodeToLine: false, DryRun: false, Debug: isDebug);
+      var res = ElementSplitByExistingNodesModifier.Run(_context, opt, Console.WriteLine);
+      Console.WriteLine($"   -> {res.ElementsActuallySplit} elements split.");
+    }
+    private void ElementIntersectionSplitRun(bool isDebug)
+    {
+      var opt = new ElementIntersectionSplitModifier.Options(DistTol: 1.0, GridCellSize: 200.0, DryRun: false, Debug: isDebug);
+      ElementIntersectionSplitModifier.Run(_context, opt, Console.WriteLine);
+      RemoveDanglingShortElements();
+    }
+    private void ElementDuplicateMergeRun(bool isDebug)
+    {
+      string rpt = Path.Combine(_csvPath, "DuplicateMerge_Report.csv");
+      var opt = new ElementDuplicateMergeModifier.Options(rpt, isDebug);
+      ElementDuplicateMergeModifier.Run(_context, opt, Console.WriteLine);
+    }
+    private void RemoveDanglingShortElements()
+    {
+      var nodeDegree = NodeDegreeInspector.BuildNodeDegree(_context);
+      var shortEle = new List<int>();
+      foreach (var kv in _context.Elements)
+      {
+        if (kv.Value.NodeIDs.Count < 2) continue;
+        int n0 = kv.Value.NodeIDs[0], n1 = kv.Value.NodeIDs[1];
+        if (!nodeDegree.TryGetValue(n0, out int d0) || !nodeDegree.TryGetValue(n1, out int d1)) continue;
+        if (DistanceUtils.GetDistanceBetweenNodes(n0, n1, _context.Nodes) < 50.0 && (d0 == 1 || d1 == 1)) shortEle.Add(kv.Key);
+      }
+      foreach (int id in shortEle) _context.Elements.Remove(id);
+      if (shortEle.Count > 0) Console.WriteLine($"[Info] Removed {shortEle.Count} dangling elements.");
+    }
+    private void CollapseShortElementsRun(double tol)
+    {
+      var elements = _context.Elements; var nodes = _context.Nodes;
+      var keys = elements.Keys.ToList();
+      foreach (var eid in keys)
+      {
+        if (!elements.Contains(eid)) continue;
+        var ids = elements[eid].NodeIDs;
+        if (ids.Count < 2) continue;
+        if (DistanceUtils.GetDistanceBetweenNodes(ids[0], ids[1], nodes) < tol)
+        {
+          int keep = ids[0], remove = ids[1];
+          elements.Remove(eid);
+          var neighbors = elements.Where(e => e.Value.NodeIDs.Contains(remove)).ToList();
+          foreach (var n in neighbors)
+          {
+            if (n.Value.TryReplaceNode(remove, keep, out var repl))
+              elements.AddWithID(n.Key, repl.NodeIDs.ToList(), repl.PropertyID, repl.ExtraData.ToDictionary(k => k.Key, v => v.Value));
+          }
+          if (nodes.Contains(remove)) nodes.Remove(remove);
+        }
+      }
     }
   }
 }
