@@ -53,16 +53,47 @@ namespace MooringFitting2026.Services.Reporting
     /// 수집된 데이터를 CSV 파일로 저장합니다.
     /// </summary>
     /// <param name="directoryPath">저장할 폴더 경로</param>
+    // ... (클래스 내부)
+
     public void ExportReports(string directoryPath)
     {
       try
       {
-        // MF 보고서 저장
+        // ---------------------------------------------------------
+        // [추가] MF Report용 Appendix(부록) 생성
+        // ---------------------------------------------------------
+        StringBuilder sbAppendix = new StringBuilder();
+        sbAppendix.AppendLine();
+        sbAppendix.AppendLine("===================================================================================");
+        sbAppendix.AppendLine("[Appendix] Calculation Method Log");
+        sbAppendix.AppendLine("1. Unit Conversion");
+        sbAppendix.AppendLine("   - Force (N) = Mass (Ton) * 10000 (assuming g=10 m/s^2)");
+        sbAppendix.AppendLine();
+        sbAppendix.AppendLine("2. Coordinate System Definition (for Mooring Fitting)");
+        sbAppendix.AppendLine("   - Local Z (w): Normal vector of the deck plane (calculated from dependent nodes).");
+        sbAppendix.AppendLine("   - Local X (u): Global X vector projected onto the deck plane.");
+        sbAppendix.AppendLine("   - Local Y (v): Cross product of Local Z and Local X (Right-hand rule).");
+        sbAppendix.AppendLine();
+        sbAppendix.AppendLine("3. Force Decomposition Formula");
+        sbAppendix.AppendLine("   Given: Tension (T), Horizontal Angle (Ah = 'a'), Vertical Angle (Av = 'c')");
+        sbAppendix.AppendLine("   - F_local_z = T * sin(Av)");
+        sbAppendix.AppendLine("   - F_plane   = T * cos(Av)");
+        sbAppendix.AppendLine("   - F_local_x = F_plane * cos(Ah)");
+        sbAppendix.AppendLine("   - F_local_y = F_plane * sin(Ah)");
+        sbAppendix.AppendLine();a
+        sbAppendix.AppendLine("4. Global Transformation");
+        sbAppendix.AppendLine("   - F_global = (F_local_x * u) + (F_local_y * v) + (F_local_z * w)");
+        sbAppendix.AppendLine("===================================================================================");
+
+        // [수정] MF 보고서 저장 (본문 + 부록 결합)
+        string mfContent = _mfReportBuffer.ToString() + sbAppendix.ToString();
         string mfPath = Path.Combine(directoryPath, "Report_LoadCalculation_MF.csv");
-        File.WriteAllText(mfPath, _mfReportBuffer.ToString(), Encoding.UTF8);
+
+        // UTF-8 BOM을 포함하여 저장 (엑셀 호환성)
+        File.WriteAllText(mfPath, mfContent, Encoding.UTF8);
         Console.WriteLine($"   -> [Report] MF Load Report saved: {Path.GetFileName(mfPath)}");
 
-        // Winch 보고서 저장
+        // [기존] Winch 보고서 저장
         string winchPath = Path.Combine(directoryPath, "Report_LoadCalculation_Winch.csv");
         File.WriteAllText(winchPath, _winchReportBuffer.ToString(), Encoding.UTF8);
         Console.WriteLine($"   -> [Report] Winch Load Report saved: {Path.GetFileName(winchPath)}");
