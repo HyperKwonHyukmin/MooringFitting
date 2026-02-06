@@ -21,6 +21,7 @@ namespace MooringFitting2026.Inspector
     public double EquivalenceTolerance { get; private set; }
     public double NearNodeTolerance { get; private set; }
     public ProcessingStage ActiveStages { get; private set; }
+    public bool EnableFileLogging { get; private set; }
 
     private InspectorOptions() { }
 
@@ -46,7 +47,8 @@ namespace MooringFitting2026.Inspector
           ShortElementDistanceThreshold = 1.0,
           EquivalenceTolerance = 0.1,
           NearNodeTolerance = 1.0,
-          ActiveStages = ProcessingStage.All
+          ActiveStages = ProcessingStage.All,
+          EnableFileLogging = false
         };
       }
 
@@ -171,6 +173,16 @@ namespace MooringFitting2026.Inspector
           if (stage == limitStage) break;
         }
         _options.ActiveStages = mask;
+        return this;
+      }
+
+      /// <summary>
+      /// 콘솔 출력을 파일로도 저장할지 설정합니다.
+      /// </summary>
+      /// <param name="enabled">true일 경우 CSV 폴더에 로그 파일 생성</param>
+      public Builder WriteLogToFile(bool enabled)
+      {
+        _options.EnableFileLogging = enabled;
         return this;
       }
 
