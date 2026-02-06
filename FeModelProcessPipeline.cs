@@ -1,275 +1,197 @@
-using MooringFitting2026.Exporters;
-using MooringFitting2026.Extensions;
-using MooringFitting2026.Inspector;
-using MooringFitting2026.Inspector.ElementInspector;
-using MooringFitting2026.Inspector.NodeInspector;
-using MooringFitting2026.Model.Entities;
-using MooringFitting2026.Modifier.ElementModifier;
-using MooringFitting2026.Modifier.NodeModifier;
-using MooringFitting2026.RawData;
-using MooringFitting2026.Services.Load;
-using MooringFitting2026.Services.Reporting;
-using MooringFitting2026.Services.SectionProperties;
-using MooringFitting2026.Services.Solver;
-using MooringFitting2026.Utils.Geometry;
 using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 
-namespace MooringFitting2026.Pipeline
+namespace MooringFitting2026.Inspector
 {
-  public class FeModelProcessPipeline
+  /// <summary>
+  /// 검사기(Inspector)의 동작을 제어하는 설정 옵션입니다.
+  /// <br/>사용법: InspectorOptions.Create().EnableDebug().Build();
+  /// </summary>
+  public class InspectorOptions
   {
-    private readonly FeModelContext _context;
-    private readonly RawStructureData _rawStructureData;
-    private readonly WinchData _winchData;
-    private readonly InspectorOptions _inspectOpt;
-    private readonly string _csvPath;
-    private readonly bool _runSolver;
+    // ... (속성 정의는 기존과 동일) ...
+    public bool DebugMode { get; private set; }
+    public bool PrintAllNodeIds { get; private set; }
+    public bool CheckTopology { get; private set; }
+    public bool CheckGeometry { get; private set; }
+    public bool CheckEquivalence { get; private set; }
+    public bool CheckDuplicate { get; private set; }
+    public bool CheckIntegrity { get; private set; }
+    public bool CheckIsolation { get; private set; }
+    public double ShortElementDistanceThreshold { get; private set; }
+    public double EquivalenceTolerance { get; private set; }
+    public double NearNodeTolerance { get; private set; }
+    public ProcessingStage ActiveStages { get; private set; }
+    public bool EnableFileLogging { get; private set; }
 
-    private Dictionary<int, MooringFittingConnectionModifier.RigidInfo> _rigidMap
-        = new Dictionary<int, MooringFittingConnectionModifier.RigidInfo>();
-    private List<ForceLoad> _forceLoads = new List<ForceLoad>();
-    private List<int> _lastSpcList = new List<int>();
+    private InspectorOptions() { }
 
-    public FeModelProcessPipeline(
-        FeModelContext context,
-        RawStructureData rawStructureData,
-        WinchData winchData,
-        InspectorOptions inspectOpt,
-        string CsvPath,
-        bool runSolver = true)
+    public static Builder Create() => new Builder();
+    public static InspectorOptions Default => Create().Build();
+
+    public class Builder
     {
-      _context = context ?? throw new ArgumentNullException(nameof(context));
-      _rawStructureData = rawStructureData;
-      _winchData = winchData;
-      _inspectOpt = inspectOpt ?? InspectorOptions.Default;
-      _csvPath = CsvPath;
-      _runSolver = runSolver;
-    }
+      private readonly InspectorOptions _options;
 
-    public void Run()
-    {
-      Console.WriteLine("\n[Pipeline Started] Processing FE Model...");
-
-      Console.WriteLine(">>> [Preprocessing] Normalizing Z-Plane (2D Conversion)...");
-      NodeZPlaneNormalizeModifier.Run(_context);
-
-      ExportBaseline();
-      RunStagedPipeline();
-    }
-
-    private void ExportBaseline()
-    {
-      string stageName = "STAGE_00";
-      Console.WriteLine($"================ {stageName} =================");
-      var freeEndNodes = StructuralSanityInspector.Inspect(_context, _inspectOpt);
-      _lastSpcList = freeEndNodes;
-      BdfExporter.Export(_context, _csvPath, stageName, freeEndNodes);
-    }
-
-    private void RunStagedPipeline()
-    {
-      // Stage 01 ~ 05 (기존과 동일)
-      if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage01_CollinearOverlap))
-        RunStage("STAGE_01", () => ElementCollinearOverlapGroupRun(_inspectOpt.DebugMode));
-      else LogSkip("STAGE_01");
-
-      if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage02_SplitByNodes))
-        RunStage("STAGE_02", () => ElementSplitByExistingNodesRun(_inspectOpt.DebugMode));
-      else LogSkip("STAGE_02");
-
-      if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage03_IntersectionSplit))
+      public Builder()
       {
-        RunStage("STAGE_03", () => {
-          ElementIntersectionSplitRun(_inspectOpt.DebugMode);
-          CollapseShortElementsRun(1.0);
-        });
-      }
-      else LogSkip("STAGE_03");
-
-      if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage03_5_DuplicateMerge))
-        RunStage("STAGE_03_5", () => ElementDuplicateMergeRun(_inspectOpt.DebugMode));
-      else LogSkip("STAGE_03_5");
-
-      if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage04_Extension))
-      {
-        RunStage("STAGE_04", () => {
-          var extendOpt = new ElementExtendToBBoxIntersectAndSplitModifier.Options
-          { SearchRatio = 1.2, DefaultSearchDist = 50.0, IntersectionTolerance = 1.0, GridCellSize = 50.0, Debug = _inspectOpt.DebugMode };
-          var result = ElementExtendToBBoxIntersectAndSplitModifier.Run(_context, extendOpt, Console.WriteLine);
-          Console.WriteLine($"[Stage 04] Extended: {result.SuccessConnections} elements.");
-          CollapseShortElementsRun(1.0);
-        });
-      }
-      else LogSkip("STAGE_04");
-
-      if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage05_MeshRefinement))
-      {
-        RunStage("STAGE_05", () => {
-          var meshOpt = new ElementMeshRefinementModifier.Options { TargetMeshSize = 500.0, Debug = _inspectOpt.DebugMode };
-          var result = ElementMeshRefinementModifier.Run(_context, meshOpt, Console.WriteLine);
-          Console.WriteLine($"[Stage 05] Meshing Completed. {result.ElementsRefined} elements refined.");
-        });
-      }
-      else LogSkip("STAGE_05");
-
-      // [수정된 Stage 06]
-      if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage06_LoadGeneration))
-      {
-        RunStage("STAGE_06", () =>
+        _options = new InspectorOptions
         {
-          // [추가] 리포터 인스턴스 생성
-          var loadReporter = new LoadCalculationReporter();
-
-          // 1. Rigid 생성
-          _rigidMap = MooringFittingConnectionModifier.Run(_context, _rawStructureData.MfList, _lastSpcList, Console.WriteLine);
-
-          Console.WriteLine(">>> Generating Loads...");
-          _forceLoads.Clear();
-
-          // 2. MF 하중 생성 (리포터 전달)
-          int mfStartID = 2;
-          // [수정] reporter 인자 전달
-          var mfLoads = MooringLoadGenerator.Generate(
-              _context,
-              _rawStructureData.MfList,
-              _rigidMap,
-              Console.WriteLine,
-              mfStartID,
-              loadReporter); // 전달
-
-          _forceLoads.AddRange(mfLoads);
-
-          // 3. Winch 하중 시작 ID 계산
-          int winchStartID = mfStartID;
-          if (mfLoads.Count > 0)
-          {
-            winchStartID = mfLoads.Max(l => l.LoadCaseID) + 1;
-          }
-
-          // 4. Winch 하중 생성 (리포터 전달)
-          // [수정] reporter 인자 전달
-          var winchLoads = WinchLoadGenerator.Generate(
-              _context,
-              _winchData,
-              Console.WriteLine,
-              winchStartID,
-              loadReporter); // 전달
-
-          _forceLoads.AddRange(winchLoads);
-
-          // [추가] 리포트 파일로 내보내기 (Pipeline 생성 시 받은 _csvPath 폴더에 저장)
-          Console.WriteLine(">>> Exporting Load Calculation Reports...");
-          loadReporter.ExportReports(_csvPath);
-
-          // ... (기존 요약 출력 코드) ...
-          int totalMaxID = winchStartID;
-          if (winchLoads.Count > 0) totalMaxID = winchLoads.Max(l => l.LoadCaseID);
-
-          Console.WriteLine($"   -> Load Generation Summary:");
-          // ...
-        });
-      }
-      else LogSkip("STAGE_06");
-    }
-
-    private void LogSkip(string stageName)
-    {
-      Console.ForegroundColor = ConsoleColor.DarkGray;
-      Console.WriteLine($"--- Skipping {stageName} (Disabled in Options) ---");
-      Console.ResetColor();
-    }
-
-    private void RunStage(string stageName, Action action)
-    {
-      Console.WriteLine($"================ {stageName} =================");
-      action();
-
-      List<int> spcList;
-      if (stageName.Equals("STAGE_06", StringComparison.OrdinalIgnoreCase))
-      {
-        Console.WriteLine("   -> [Info] Skipping Inspector for STAGE_06 to preserve Rigid Independent Nodes.");
-        spcList = _lastSpcList;
-      }
-      else
-      {
-        spcList = StructuralSanityInspector.Inspect(_context, _inspectOpt);
-        _lastSpcList = spcList;
+          DebugMode = false,
+          PrintAllNodeIds = false,
+          CheckTopology = true,
+          CheckGeometry = true,
+          CheckEquivalence = true,
+          CheckDuplicate = true,
+          CheckIntegrity = true,
+          CheckIsolation = true,
+          ShortElementDistanceThreshold = 1.0,
+          EquivalenceTolerance = 0.1,
+          NearNodeTolerance = 1.0,
+          ActiveStages = ProcessingStage.All,
+          EnableFileLogging = false
+        };
       }
 
-      BdfExporter.Export(_context, _csvPath, stageName, spcList, _rigidMap, _forceLoads);
+      // =============================================================
+      // 1. 디버깅 설정 (Debugging)
+      // =============================================================
 
-      if (stageName.Equals("STAGE_06", StringComparison.OrdinalIgnoreCase) && _runSolver)
+      /// <summary>
+      /// [디버그 모드] 상세 로그를 출력하도록 설정합니다.
+      /// </summary>
+      /// <param name="printAllNodes">
+      /// true일 경우, 검출된 모든 노드 ID 목록을 콘솔에 출력합니다. 
+      /// (노드가 많을 경우 콘솔이 느려질 수 있음)
+      /// </param>
+      public Builder EnableDebug(bool printAllNodes = false)
       {
-        Console.WriteLine(">>> [Solver] Launching Nastran Solver...");
-        string bdfFullPath = Path.Combine(_csvPath, stageName + ".bdf");
-        NastranSolverService.RunNastran(bdfFullPath, Console.WriteLine);
+        _options.DebugMode = true;
+        _options.PrintAllNodeIds = printAllNodes;
+        return this;
       }
-    }
 
-    // --- Private Logic Methods ---
-    private void ElementCollinearOverlapGroupRun(bool isDebug)
-    {
-      var overlapGroup = ElementCollinearOverlapGroupInspector.FindSegmentationGroups(_context, 3e-2, 20.0);
-      if (isDebug) Console.WriteLine($"   -> Found {overlapGroup.Count} overlapping groups.");
-      ElementCollinearOverlapAlignSplitModifier.Run(_context, overlapGroup, 0.05, 1e-3, isDebug, Console.WriteLine, false);
-    }
-    private void ElementSplitByExistingNodesRun(bool isDebug)
-    {
-      var opt = new ElementSplitByExistingNodesModifier.Options(
-          DistanceTol: 1.0, GridCellSize: 5.0, SnapNodeToLine: false, DryRun: false, Debug: isDebug);
-      var res = ElementSplitByExistingNodesModifier.Run(_context, opt, Console.WriteLine);
-      Console.WriteLine($"   -> {res.ElementsActuallySplit} elements split.");
-    }
-    private void ElementIntersectionSplitRun(bool isDebug)
-    {
-      var opt = new ElementIntersectionSplitModifier.Options(DistTol: 1.0, GridCellSize: 200.0, DryRun: false, Debug: isDebug);
-      ElementIntersectionSplitModifier.Run(_context, opt, Console.WriteLine);
-      RemoveDanglingShortElements();
-    }
-    private void ElementDuplicateMergeRun(bool isDebug)
-    {
-      string rpt = Path.Combine(_csvPath, "DuplicateMerge_Report.csv");
-      var opt = new ElementDuplicateMergeModifier.Options(rpt, isDebug);
-      ElementDuplicateMergeModifier.Run(_context, opt, Console.WriteLine);
-    }
-    private void RemoveDanglingShortElements()
-    {
-      var nodeDegree = NodeDegreeInspector.BuildNodeDegree(_context);
-      var shortEle = new List<int>();
-      foreach (var kv in _context.Elements)
+      /// <summary>
+      /// 디버그 로그를 끕니다. (오류 메시지만 출력됨)
+      /// </summary>
+      public Builder DisableDebug()
       {
-        if (kv.Value.NodeIDs.Count < 2) continue;
-        int n0 = kv.Value.NodeIDs[0], n1 = kv.Value.NodeIDs[1];
-        if (!nodeDegree.TryGetValue(n0, out int d0) || !nodeDegree.TryGetValue(n1, out int d1)) continue;
-        if (DistanceUtils.GetDistanceBetweenNodes(n0, n1, _context.Nodes) < 50.0 && (d0 == 1 || d1 == 1)) shortEle.Add(kv.Key);
+        _options.DebugMode = false;
+        _options.PrintAllNodeIds = false;
+        return this;
       }
-      foreach (int id in shortEle) _context.Elements.Remove(id);
-      if (shortEle.Count > 0) Console.WriteLine($"[Info] Removed {shortEle.Count} dangling elements.");
-    }
-    private void CollapseShortElementsRun(double tol)
-    {
-      var elements = _context.Elements; var nodes = _context.Nodes;
-      var keys = elements.Keys.ToList();
-      foreach (var eid in keys)
+
+      // =============================================================
+      // 2. 검사 항목 스위치 (Check Switches)
+      // =============================================================
+
+      /// <summary>
+      /// [일괄 설정] 모든 검사 항목(Topology, Geometry, Duplicate 등)을 켜거나 끕니다.
+      /// <br/>보통 .SetAllChecks(false)로 초기화한 뒤 필요한 것만 .WithXxx(true)로 켭니다.
+      /// </summary>
+      public Builder SetAllChecks(bool isEnabled)
       {
-        if (!elements.Contains(eid)) continue;
-        var ids = elements[eid].NodeIDs;
-        if (ids.Count < 2) continue;
-        if (DistanceUtils.GetDistanceBetweenNodes(ids[0], ids[1], nodes) < tol)
+        _options.CheckTopology = isEnabled;
+        _options.CheckGeometry = isEnabled;
+        _options.CheckEquivalence = isEnabled;
+        _options.CheckDuplicate = isEnabled;
+        _options.CheckIntegrity = isEnabled;
+        _options.CheckIsolation = isEnabled;
+        return this;
+      }
+
+      /// <summary>
+      /// [위상 검사] 자유단(Free End) 및 고립 노드(Isolated Node)를 검사할지 설정합니다.
+      /// </summary>
+      public Builder WithTopology(bool enabled) { _options.CheckTopology = enabled; return this; }
+
+      /// <summary>
+      /// [형상 검사] 너무 짧은 요소(Short Element) 등을 검사할지 설정합니다.
+      /// </summary>
+      public Builder WithGeometry(bool enabled) { _options.CheckGeometry = enabled; return this; }
+
+      /// <summary>
+      /// [등가 노드] 위치가 거의 동일한(겹친) 노드를 검사할지 설정합니다.
+      /// </summary>
+      public Builder WithEquivalence(bool enabled) { _options.CheckEquivalence = enabled; return this; }
+
+      /// <summary>
+      /// [중복 요소] 동일한 노드 구성을 가진 중복 Element를 검사할지 설정합니다.
+      /// </summary>
+      public Builder WithDuplicate(bool enabled) { _options.CheckDuplicate = enabled; return this; }
+
+      /// <summary>
+      /// [무결성] 존재하지 않는 노드/프로퍼티를 참조하는 요소를 검사할지 설정합니다.
+      /// </summary>
+      public Builder WithIntegrity(bool enabled) { _options.CheckIntegrity = enabled; return this; }
+
+      // =============================================================
+      // 3. 임계값 설정 (Thresholds)
+      // =============================================================
+
+      /// <summary>
+      /// 검사에 사용될 허용 오차(Tolerance) 및 기준값을 설정합니다.
+      /// </summary>
+      /// <param name="shortElemDist">이 길이보다 짧으면 'Short Element'로 간주 (기본 1.0)</param>
+      /// <param name="equivTol">이 거리 이내면 '동일 노드'로 간주 (기본 0.1)</param>
+      /// <param name="nearNodeTol">인접 노드 검색 범위 (기본 1.0)</param>
+      public Builder SetThresholds(double shortElemDist = 1.0, double equivTol = 0.1, double nearNodeTol = 1.0)
+      {
+        _options.ShortElementDistanceThreshold = shortElemDist;
+        _options.EquivalenceTolerance = equivTol;
+        _options.NearNodeTolerance = nearNodeTol;
+        return this;
+      }
+
+      // =============================================================
+      // 4. 파이프라인 단계 설정 (Pipeline Flow)
+      // =============================================================
+
+      /// <summary>
+      /// 실행할 파이프라인 단계를 명시적으로 설정합니다.
+      /// 예: .SetStages(ProcessingStage.Stage01 | ProcessingStage.Stage06)
+      /// </summary>
+      public Builder SetStages(ProcessingStage stages)
+      {
+        _options.ActiveStages = stages;
+        return this;
+      }
+
+      /// <summary>
+      /// 특정 단계까지만 실행하고 멈추도록 설정합니다. (디버깅용)
+      /// </summary>
+      /// <param name="limitStage">마지막으로 실행할 단계 (포함)</param>
+      public Builder RunUntil(ProcessingStage limitStage)
+      {
+        // Enum 값 비교를 위해 정수형 변환 등을 사용할 수도 있지만,
+        // 여기서는 비트 연산으로 간단히 구현 (순서 의존적)
+        ProcessingStage mask = ProcessingStage.None;
+        foreach (ProcessingStage stage in Enum.GetValues(typeof(ProcessingStage)))
         {
-          int keep = ids[0], remove = ids[1];
-          elements.Remove(eid);
-          var neighbors = elements.Where(e => e.Value.NodeIDs.Contains(remove)).ToList();
-          foreach (var n in neighbors)
-          {
-            if (n.Value.TryReplaceNode(remove, keep, out var repl))
-              elements.AddWithID(n.Key, repl.NodeIDs.ToList(), repl.PropertyID, repl.ExtraData.ToDictionary(k => k.Key, v => v.Value));
-          }
-          if (nodes.Contains(remove)) nodes.Remove(remove);
+          if (stage == ProcessingStage.None || stage == ProcessingStage.All) continue;
+
+          mask |= stage;
+          if (stage == limitStage) break;
         }
+        _options.ActiveStages = mask;
+        return this;
+      }
+
+      /// <summary>
+      /// 콘솔 출력을 파일로도 저장할지 설정합니다.
+      /// </summary>
+      /// <param name="enabled">true일 경우 CSV 폴더에 로그 파일 생성</param>
+      public Builder WriteLogToFile(bool enabled)
+      {
+        _options.EnableFileLogging = enabled;
+        return this;
+      }
+
+      /// <summary>
+      /// 설정을 완료하고 InspectorOptions 불변 객체를 생성합니다.
+      /// </summary>
+      public InspectorOptions Build()
+      {
+        return _options;
       }
     }
   }
