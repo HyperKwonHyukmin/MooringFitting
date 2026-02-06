@@ -26,7 +26,6 @@ namespace MooringFitting2026.Pipeline
     private readonly WinchData _winchData;
     private readonly InspectorOptions _inspectOpt;
     private readonly string _csvPath;
-    private readonly string _modelName; // [추가] 모델 이름 (파일명)
     private readonly bool _runSolver;
 
     private Dictionary<int, MooringFittingConnectionModifier.RigidInfo> _rigidMap
@@ -34,14 +33,12 @@ namespace MooringFitting2026.Pipeline
     private List<ForceLoad> _forceLoads = new List<ForceLoad>();
     private List<int> _lastSpcList = new List<int>();
 
-    // [수정] 생성자에 modelName 추가
     public FeModelProcessPipeline(
         FeModelContext context,
         RawStructureData rawStructureData,
         WinchData winchData,
         InspectorOptions inspectOpt,
         string CsvPath,
-        string modelName, // [추가]
         bool runSolver = true)
     {
       _context = context ?? throw new ArgumentNullException(nameof(context));
@@ -49,14 +46,12 @@ namespace MooringFitting2026.Pipeline
       _winchData = winchData;
       _inspectOpt = inspectOpt ?? InspectorOptions.Default;
       _csvPath = CsvPath;
-      _modelName = modelName; // [추가]
       _runSolver = runSolver;
     }
 
     public void Run()
     {
       Console.WriteLine("\n[Pipeline Started] Processing FE Model...");
-      Console.WriteLine($"   -> Model Name: {_modelName}");
 
       Console.WriteLine(">>> [Preprocessing] Normalizing Z-Plane (2D Conversion)...");
       NodeZPlaneNormalizeModifier.Run(_context);
@@ -76,7 +71,7 @@ namespace MooringFitting2026.Pipeline
 
     private void RunStagedPipeline()
     {
-      // Stage 01 ~ 05 (기존 유지)
+      // Stage 01 ~ 05 (기존과 동일)
       if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage01_CollinearOverlap))
         RunStage("STAGE_01", () => ElementCollinearOverlapGroupRun(_inspectOpt.DebugMode));
       else LogSkip("STAGE_01");
@@ -120,12 +115,12 @@ namespace MooringFitting2026.Pipeline
       }
       else LogSkip("STAGE_05");
 
-      // [수정] Stage 06 (최종 단계)
+      // [수정된 Stage 06]
       if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage06_LoadGeneration))
       {
-        // [핵심 변경] _modelName을 customExportName으로 전달하여 파일명 변경
         RunStage("STAGE_06", () =>
         {
+          // [추가] 리포터 인스턴스 생성
           var loadReporter = new LoadCalculationReporter();
 
           // 1. Rigid 생성
@@ -134,28 +129,48 @@ namespace MooringFitting2026.Pipeline
           Console.WriteLine(">>> Generating Loads...");
           _forceLoads.Clear();
 
-          // 2. MF 하중
+          // 2. MF 하중 생성 (리포터 전달)
           int mfStartID = 2;
+          // [수정] reporter 인자 전달
           var mfLoads = MooringLoadGenerator.Generate(
-              _context, _rawStructureData.MfList, _rigidMap, Console.WriteLine, mfStartID, loadReporter);
+              _context,
+              _rawStructureData.MfList,
+              _rigidMap,
+              Console.WriteLine,
+              mfStartID,
+              loadReporter); // 전달
+
           _forceLoads.AddRange(mfLoads);
 
-          // 3. Winch 하중
+          // 3. Winch 하중 시작 ID 계산
           int winchStartID = mfStartID;
-          if (mfLoads.Count > 0) winchStartID = mfLoads.Max(l => l.LoadCaseID) + 1;
+          if (mfLoads.Count > 0)
+          {
+            winchStartID = mfLoads.Max(l => l.LoadCaseID) + 1;
+          }
 
+          // 4. Winch 하중 생성 (리포터 전달)
+          // [수정] reporter 인자 전달
           var winchLoads = WinchLoadGenerator.Generate(
-              _context, _winchData, Console.WriteLine, winchStartID, loadReporter);
+              _context,
+              _winchData,
+              Console.WriteLine,
+              winchStartID,
+              loadReporter); // 전달
+
           _forceLoads.AddRange(winchLoads);
 
-          // 리포트 저장
+          // [추가] 리포트 파일로 내보내기 (Pipeline 생성 시 받은 _csvPath 폴더에 저장)
           Console.WriteLine(">>> Exporting Load Calculation Reports...");
           loadReporter.ExportReports(_csvPath);
 
-          // 요약 출력
-          Console.WriteLine($"   -> Load Generation Summary: MF({mfLoads.Count}), Winch({winchLoads.Count})");
+          // ... (기존 요약 출력 코드) ...
+          int totalMaxID = winchStartID;
+          if (winchLoads.Count > 0) totalMaxID = winchLoads.Max(l => l.LoadCaseID);
 
-        }, _modelName); // <--- [중요] 여기에 모델 이름을 넘겨줌
+          Console.WriteLine($"   -> Load Generation Summary:");
+          // ...
+        });
       }
       else LogSkip("STAGE_06");
     }
@@ -167,28 +182,15 @@ namespace MooringFitting2026.Pipeline
       Console.ResetColor();
     }
 
-    // ... (FeModelProcessPipeline.cs 내부)
-
-    // [수정] RunStage 메서드 전체
-    // [수정] RunStage 메서드 재작성
-    private void RunStage(string stageName, Action action, string customExportName = null)
+    private void RunStage(string stageName, Action action)
     {
-      // [수정 1] 디버그 모드일 때만 스테이지 헤더 출력
-      if (_inspectOpt.DebugMode)
-      {
-        Console.WriteLine($"================ {stageName} =================");
-      }
-
+      Console.WriteLine($"================ {stageName} =================");
       action();
 
       List<int> spcList;
       if (stageName.Equals("STAGE_06", StringComparison.OrdinalIgnoreCase))
       {
-        // [수정 2] 안내 메시지도 디버그 모드 확인
-        if (_inspectOpt.DebugMode)
-        {
-          Console.WriteLine("   -> [Info] Skipping Inspector for STAGE_06 to preserve Rigid Independent Nodes.");
-        }
+        Console.WriteLine("   -> [Info] Skipping Inspector for STAGE_06 to preserve Rigid Independent Nodes.");
         spcList = _lastSpcList;
       }
       else
@@ -197,92 +199,15 @@ namespace MooringFitting2026.Pipeline
         _lastSpcList = spcList;
       }
 
-      // 1. BDF 파일명 결정 (커스텀 이름 우선)
-      string finalFileName = !string.IsNullOrEmpty(customExportName) ? customExportName : stageName;
-      string bdfFullPath = Path.Combine(_csvPath, finalFileName + ".bdf");
+      BdfExporter.Export(_context, _csvPath, stageName, spcList, _rigidMap, _forceLoads);
 
-      // 2. BDF 내보내기
-      BdfExporter.Export(_context, _csvPath, finalFileName, spcList, _rigidMap, _forceLoads);
-
-      // [수정 3] 파일 저장 알림도 디버그 모드 확인
-      if (_inspectOpt.DebugMode)
+      if (stageName.Equals("STAGE_06", StringComparison.OrdinalIgnoreCase) && _runSolver)
       {
-        Console.WriteLine($"   -> Exported: {finalFileName}.bdf");
-      }
-
-      // 3. Solver 실행 및 결과 처리 로직 (STAGE_06 전용)
-      if (stageName.Equals("STAGE_06", StringComparison.OrdinalIgnoreCase))
-      {
-        string f06Path = Path.Combine(_csvPath, finalFileName + ".f06");
-        bool f06Exists = false;
-
-        // (A) Solver 실행 모드인 경우
-        if (_runSolver)
-        {
-          // [수정 4] 솔버 시작 알림 제어
-          if (_inspectOpt.DebugMode)
-          {
-            Console.WriteLine(">>> [Solver] Launching Nastran Solver...");
-          }
-
-          // [수정 5] 솔버 로그 억제 (디버그 모드 아니면 빈 Action 전달)
-          Action<string> solverLogger = _inspectOpt.DebugMode ? (Action<string>)Console.WriteLine : (msg) => { };
-          NastranSolverService.RunNastran(bdfFullPath, solverLogger);
-
-          f06Exists = File.Exists(f06Path);
-        }
-        // (B) Solver 스킵 모드인 경우
-        else
-        {
-          if (_inspectOpt.DebugMode)
-          {
-            Console.WriteLine(">>> [Solver] Skipped (Option is false). Checking for existing .f06 file...");
-          }
-          f06Exists = File.Exists(f06Path);
-        }
-
-        // 4. 결과 파일(.f06) 검사
-        if (f06Exists)
-        {
-          // [수정 6] 결과 분석 시작 알림 제어
-          if (_inspectOpt.DebugMode)
-          {
-            Console.WriteLine($">>> [Result] Scanning {Path.GetFileName(f06Path)} for errors...");
-          }
-
-          // F06ResultScanner가 존재한다고 가정 (업로드된 파일 내용 기반)
-          if (F06ResultScanner.HasFatalError(f06Path, out string errorMsg))
-          {
-            // [유지] Fatal Error는 중요한 정보이므로 디버그 모드와 상관없이 출력 (색상 강조)
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine(errorMsg);
-            Console.ResetColor();
-            Console.WriteLine("!!! SOLVER TERMINATED WITH FATAL ERRORS. RESULT PARSING SKIPPED. !!!");
-          }
-          else
-          {
-            // [수정 7] 성공 메시지는 디버그 모드에서만 (또는 필요시 항상 출력)
-            if (_inspectOpt.DebugMode)
-            {
-              Console.ForegroundColor = ConsoleColor.Green;
-              Console.WriteLine("   -> No Fatal Errors found. Proceeding to result parsing...");
-              Console.ResetColor();
-            }
-
-            // TODO: 결과 파싱 로직 호출
-          }
-        }
-        else
-        {
-          // [유지] 파일 없음 경고는 중요하므로 출력 유지
-          Console.ForegroundColor = ConsoleColor.Yellow;
-          Console.WriteLine($"   [Warning] Result file not found: {Path.GetFileName(f06Path)}");
-          Console.WriteLine("   -> Skipping result parsing. Run solver or check file path.");
-          Console.ResetColor();
-        }
+        Console.WriteLine(">>> [Solver] Launching Nastran Solver...");
+        string bdfFullPath = Path.Combine(_csvPath, stageName + ".bdf");
+        NastranSolverService.RunNastran(bdfFullPath, Console.WriteLine);
       }
     }
-
 
     // --- Private Logic Methods ---
     private void ElementCollinearOverlapGroupRun(bool isDebug)
