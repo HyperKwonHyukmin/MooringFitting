@@ -1,14 +1,9 @@
-using MooringFitting2026.Debug;
 using MooringFitting2026.Inspector;
-using MooringFitting2026.Model;
-using MooringFitting2026.Model.Entities;
-using MooringFitting2026.Parsers;
 using MooringFitting2026.Pipeline;
-using MooringFitting2026.RawData;
 using MooringFitting2026.Services.Initialization;
 using MooringFitting2026.Services.Logging;
 using System;
-
+using System.IO;
 
 namespace MooringFitting2026
 {
@@ -16,132 +11,119 @@ namespace MooringFitting2026
   {
     static void Main(string[] args)
     {
-      // 3431호선
-      //string Data = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part2\MooringFittingData_3431.csv";
-      //string DataLoad = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part2\MooringFittingDataLoad_3431.csv";
-
-      // 4235호선
+      // 1. 설정 (Configuration)
+      // =======================================================================
+      // [경로 설정] 테스트 환경에 맞게 경로를 확인해주세요.
       string Data = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part1\2026Ver\MooringFittingData4235.csv";
       string DataLoad = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part1\2026Ver\MooringFittingDataLoad4235.csv";
-
-      // 3414
-      //string Data = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part3\MooringFittingData_3414.csv";
-      //string DataLoad = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part3\MooringFittingDataLoad_3414.csv";
-
-
-      bool RUN_NASTRAN_SOLVER = true;
-
-      // 본 코드 진행
       string CsvFolderPath = Path.GetDirectoryName(Data);
       string inputFileName = Path.GetFileName(Data);
 
-      // [옵션 설정 가이드]
-      // .Create()로 시작하여 필요한 설정을 체이닝(Chaining) 하세요.
+      // [설정] 해석 실행 여부
+      bool RUN_NASTRAN_SOLVER = false;
+
       var globalOptions = InspectorOptions.Create()
-        .RunUntil(ProcessingStage.All) // 여기서 실행 단계 지정
-        // 실행 STAGE 지정 목록
-        //Stage01_CollinearOverlap | Stage02_SplitByNodes | Stage03_IntersectionSplit |
-        //Stage03_5_DuplicateMerge | Stage04_Extension | Stage05_MeshRefinement | Stage06_LoadGeneration
+          .RunUntil(ProcessingStage.All)
+          .DisableDebug()
+          .WriteLogToFile(true)
+          .SetAllChecks(true)
+          .SetThresholds(shortElemDist: 1.0, equivTol: 0.1)
+          .Build();
 
-        // [1] 디버깅 설정
-        //.EnableDebug(printAllNodes: true)   // 상세 로그 켜기 (노드 ID 목록 포함)
-        .DisableDebug()                  // (또는) 로그 끄기
-
-        .WriteLogToFile(true) // 로그 내용 출력
-
-        // [2] 검사 범위 설정 (기본값은 모두 true)
-        .SetAllChecks(true)                 // 일단 다 켜고 시작 (추천)
-                                            // .SetAllChecks(false)             // (또는) 다 끄고 필요한 것만 켜기
-                                            // .WithTopology(false)             // 특정 검사만 끄기 가능
-                                            // .WithDuplicate(true)             // 특정 검사만 켜기 가능
-
-        // [3] 기준값(Threshold) 설정
-        .SetThresholds(
-            shortElemDist: 1.0,             // 요소 길이가 1.0 미만이면 경고
-            equivTol: 0.1                   // 0.1 거리 이내 점은 겹친 것으로 간주
-        )
-
-        .Build(); // [4] 최종 확정
-
-
+      // 2. 파이프라인 실행 (Execution)
       // =======================================================================
-      // [변경] 로그 리다이렉션 (콘솔 + 파일 동시 출력)
+      // 파이프라인은 모델 생성 및 BDF Export, (옵션에 따라) Solver 실행을 담당합니다.
+      RunPipeline(Data, DataLoad, CsvFolderPath, inputFileName, globalOptions, RUN_NASTRAN_SOLVER);
+
+      // 3. 결과 탐색 (Post-Processing)
       // =======================================================================
+      // [수정] Solver 실행 여부와 관계없이 F06 파일이 존재하면 탐색기를 엽니다.
+      string f06Name = Path.GetFileNameWithoutExtension(inputFileName) + ".f06";
+      string f06Path = Path.Combine(CsvFolderPath, f06Name);
 
-      StreamWriter logFileWriter = null;
-      TextWriter originalConsoleOut = Console.Out; // 종료 시 복원용
-
-      if (globalOptions.EnableFileLogging && !string.IsNullOrEmpty(CsvFolderPath))
+      if (File.Exists(f06Path))
       {
-        // 파일명: Log_YYYYMMDD_HHMMSS.txt
-        string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-        string logFileName = $"Log_{timestamp}.txt";
-        string logPath = Path.Combine(CsvFolderPath, logFileName);
+        Console.WriteLine($"\n[Analysis] Inspecting {f06Name} line by line...");
 
-        try
+        // [핵심] File.ReadLines로 메모리 부하 없이 한 줄씩 가져옵니다.
+        int lineIndex = 0;
+        foreach (string line in File.ReadLines(f06Path))
         {
-          // 파일 스트림 생성 (AutoFlush=true로 실시간 기록)
-          logFileWriter = new StreamWriter(logPath, append: false, System.Text.Encoding.UTF8)
+          lineIndex++;
+
+          // =========================================================
+          // [이곳에 중단점을 걸거나 조건을 추가하여 규칙을 찾으세요]
+          // =========================================================
+
+          // 예시 1: 상위 50줄만 찍어보기 (헤더 구조 확인)
+          if (lineIndex <= 50)
           {
-            AutoFlush = true
-          };
+            Console.WriteLine($"[{lineIndex}] {line}");
+          }
 
-          // 기존의 MultiTextWriter 활용 (화면과 파일 양쪽에 씀)
-          var multiWriter = new MultiTextWriter(originalConsoleOut, logFileWriter);
-
-          // ★ 핵심: 시스템의 콘솔 출력을 가로챔
-          Console.SetOut(multiWriter);
-
-          Console.WriteLine($"[System] Log file capture started: {logPath}");
+          // 예시 2: 특정 키워드가 나오면 멈추기 (디버깅용)
+          // if (line.Contains("FATAL MESSAGE") || line.Contains("DISPLACEMENT"))
+          // {
+          //     Console.WriteLine($"Found at {lineIndex}: {line}");
+          //     // 여기에 Breakpoint 설정 (F9)
+          // }
         }
-        catch (Exception ex)
-        {
-          Console.WriteLine($"[System Warning] Failed to create log file: {ex.Message}");
-          globalOptions = InspectorOptions.Create().WriteLogToFile(false).Build(); // 실패 시 옵션 끄기
-        }
+
+        Console.WriteLine($"[Analysis] Finished scanning {lineIndex} lines.");
       }
+      else
+      {
+        Console.WriteLine($"\n[Warning] F06 file not found: {f06Path}");
+      }
+    }
 
+    // -----------------------------------------------------------------------
+    // Helper Method: RunPipeline
+    // -----------------------------------------------------------------------
+    private static void RunPipeline(
+        string dataPath, string loadPath, string outPath, string fileName,
+        InspectorOptions options, bool runSolver)
+    {
+      StreamWriter logFileWriter = null;
+      TextWriter originalConsoleOut = Console.Out;
 
-
-      // =======================================================================
-      // [변경 3] 데이터 로딩 및 파이프라인 실행
-      // =======================================================================
       try
       {
-        // 이제부터 모든 Console.WriteLine은 파일에도 저장됩니다.
-        var (feModelContext, rawStructureData, winchData) =
-            FeModelLoader.LoadAndBuild(Data, DataLoad, debugMode: globalOptions.DebugMode);
+        // 로그 설정
+        if (options.EnableFileLogging && !string.IsNullOrEmpty(outPath))
+        {
+          string logPath = Path.Combine(outPath, $"Log_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
+          logFileWriter = new StreamWriter(logPath, false, System.Text.Encoding.UTF8) { AutoFlush = true };
+          Console.SetOut(new MultiTextWriter(originalConsoleOut, logFileWriter));
+          Console.WriteLine($"[System] Log capture started: {logPath}");
+        }
 
+        // 로딩 및 모델 빌드
+        var (feModelContext, rawStructureData, winchData) =
+            FeModelLoader.LoadAndBuild(dataPath, loadPath, debugMode: options.DebugMode);
+
+        // 파이프라인 실행
         var pipeline = new FeModelProcessPipeline(
-          feModelContext,
-          rawStructureData,
-          winchData,
-          globalOptions,
-          CsvFolderPath,
-          inputFileName,
-          RUN_NASTRAN_SOLVER
+            feModelContext, rawStructureData, winchData, options, outPath, fileName, runSolver
         );
 
         pipeline.Run();
       }
       catch (Exception ex)
       {
-        Console.WriteLine($"\n[Critical Error] Program terminated unexpectedly: {ex.Message}");
-        Console.WriteLine(ex.StackTrace);
+        Console.WriteLine($"\n[Critical Error] {ex.Message}\n{ex.StackTrace}");
       }
       finally
       {
-        // =======================================================================
-        // [변경 4] 리소스 정리 (파일 닫기)
-        // =======================================================================
+        // 리소스 정리
         if (logFileWriter != null)
         {
-          Console.WriteLine("[System] Closing log file.");
-          Console.SetOut(originalConsoleOut); // 콘솔 원상 복구
+          Console.WriteLine("[System] Log file closed.");
+          Console.SetOut(originalConsoleOut);
           logFileWriter.Close();
           logFileWriter.Dispose();
         }
       }
-    }  
+    }
   }
 }
