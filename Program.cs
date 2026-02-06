@@ -29,14 +29,11 @@ namespace MooringFitting2026
       //string DataLoad = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part3\MooringFittingDataLoad_3414.csv";
 
 
-      bool RUN_NASTRAN_SOLVER = false;
+      bool RUN_NASTRAN_SOLVER = true;
 
       // 본 코드 진행
       string CsvFolderPath = Path.GetDirectoryName(Data);
-
-      //var (feModelContext, rawStructureData, winchData) =
-      //    FeModelLoader.LoadAndBuild(Data, DataLoad, debugMode: false);
-
+      string inputFileName = Path.GetFileName(Data);
 
       // [옵션 설정 가이드]
       // .Create()로 시작하여 필요한 설정을 체이닝(Chaining) 하세요.
@@ -50,10 +47,10 @@ namespace MooringFitting2026
         //.EnableDebug(printAllNodes: true)   // 상세 로그 켜기 (노드 ID 목록 포함)
         .DisableDebug()                  // (또는) 로그 끄기
 
-        .WriteLogToFile(false) // 로그 내용 출력
+        .WriteLogToFile(true) // 로그 내용 출력
 
         // [2] 검사 범위 설정 (기본값은 모두 true)
-        .SetAllChecks(false)                 // 일단 다 켜고 시작 (추천)
+        .SetAllChecks(true)                 // 일단 다 켜고 시작 (추천)
                                             // .SetAllChecks(false)             // (또는) 다 끄고 필요한 것만 켜기
                                             // .WithTopology(false)             // 특정 검사만 끄기 가능
                                             // .WithDuplicate(true)             // 특정 검사만 켜기 가능
@@ -121,6 +118,7 @@ namespace MooringFitting2026
           winchData,
           globalOptions,
           CsvFolderPath,
+          inputFileName,
           RUN_NASTRAN_SOLVER
         );
 
