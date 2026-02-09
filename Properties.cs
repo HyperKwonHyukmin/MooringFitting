@@ -110,6 +110,12 @@ namespace MooringFitting2026.Model.Entities
       return $"{type}|{dimKey}|{materialID}";
     }
 
+    // Properties 클래스 내부에 추가
+    public bool TryGetValue(int id, out Property property)
+    {
+      return _properties.TryGetValue(id, out property);
+    }
+
     public IEnumerator<KeyValuePair<int, Property>> GetEnumerator()
       => _properties.GetEnumerator();
 
