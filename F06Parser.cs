@@ -49,9 +49,12 @@ namespace MooringFitting2026.Parsers
 
     public class BeamForceData
     {
+      // ... 기존 필드 (ElementID, Forces, Calculated Stresses 등) 유지 ...
       public int ElementID { get; set; }
       public int GridID { get; set; }
       public double Pos { get; set; }
+
+      // Raw Forces
       public double BM1 { get; set; }
       public double BM2 { get; set; }
       public double Shear1 { get; set; }
@@ -60,9 +63,32 @@ namespace MooringFitting2026.Parsers
       public double TotalTorque { get; set; }
       public double WarpingTorque { get; set; }
 
+      // Calculated Stresses
+      public double Calc_Nx { get; set; }
+      public double Calc_Mx { get; set; }
+      public double Calc_Qy { get; set; }
+      public double Calc_Qz { get; set; }
+      public double Calc_My { get; set; }
+      public double Calc_Mz { get; set; }
+
+      // [NEW] 검증용 추가 필드 (2차 단면 모멘트)
+      public double Debug_I_Strong { get; set; } // Izz (Strong Axis)
+      public double Debug_I_Weak { get; set; }   // Iyy (Weak Axis)
+
+      // [NEW] 검증을 위한 참조 데이터 (Calculation References)
+      // 어떤 치수가 들어갔는지 확인 (예: "H=300, Tw=10...")
+      public string Debug_DimInfo { get; set; } = "";
+
+      // 계산에 사용된 핵심 물성치 (분모 값들)
+      public double Debug_Area { get; set; }
+      public double Debug_Wx { get; set; }
+      public double Debug_Ay { get; set; }
+      public double Debug_Az { get; set; }
+      public double Debug_Wy_Min { get; set; } // min(Wyb, Wyt)
+      public double Debug_Wz_Min { get; set; } // min(Wz+, Wz-)
+
       public override string ToString()
-          => $"Elem {ElementID} (G{GridID}): BM1={BM1:0.0E+0}, BM2={BM2:0.0E+0}, Shear1={Shear1:0.0E+0}, Shear2={Shear2:0.0E+0}, " +
-             $"Axial={Axial:0.0E+0}, TotalTorque={TotalTorque:0.0E+0} ";
+          => $"Elem {ElementID}: Nx={Calc_Nx:F2} (F={Axial:F0}/A={Debug_Area:F0})";
     }
 
     public class BeamStressData
