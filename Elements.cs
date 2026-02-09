@@ -1,3 +1,9 @@
+using MooringFitting2026.Utils;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+
 namespace MooringFitting2026.Model.Entities
 {
   /// <summary>
@@ -31,147 +37,150 @@ namespace MooringFitting2026.Model.Entities
         ? new Dictionary<string, string>(extraData)
         : new Dictionary<string, string>();
     }
-  public override string ToString()
-  {
-    string nodesPart = $"Nodes:[{string.Join(",", NodeIDs)}]";
-    string propPart = $"PropertyID:{PropertyID}";
 
-    string extraPart;
-    if (ExtraData == null || ExtraData.Count == 0)
+    public override string ToString()
     {
-      extraPart = "ExtraData:{}";
+      string nodesPart = $"Nodes:[{string.Join(",", NodeIDs)}]";
+      string propPart = $"PropertyID:{PropertyID}";
+
+      string extraPart;
+      if (ExtraData == null || ExtraData.Count == 0)
+      {
+        extraPart = "ExtraData:{}";
+      }
+      else
+      {
+        // 보기 좋게 key 정렬 + key=value로 출력
+        var pairs = ExtraData
+          .OrderBy(kv => kv.Key)
+          .Select(kv =>
+          {
+            string k = kv.Key ?? "";
+            string v = kv.Value ?? "";
+            return $"{k}={v}";
+          });
+
+        extraPart = $"ExtraData:{{{string.Join(", ", pairs)}}}";
+      }
+
+      return $"{nodesPart}, {propPart}, {extraPart}";
     }
-    else
+
+  }
+
+  public class Elements : IEnumerable<KeyValuePair<int, Element>>
+  {
+    private readonly Dictionary<int, Element> _elements = new();
+
+    private int _nextElementID = 1;
+    public int LastElementID { get; private set; } = 0;
+
+    public Elements() { }
+
+    public Element this[int id]
     {
-      // 보기 좋게 key 정렬 + key=value로 출력
-      var pairs = ExtraData
-        .OrderBy(kv => kv.Key)
-        .Select(kv =>
+      get
+      {
+        if (!_elements.TryGetValue(id, out var element))
+          throw new KeyNotFoundException($"Element ID {id} does not exist.");
+        return element;
+      }
+    }
+
+    /// <summary>
+    /// 새로운 Element 추가 : ID는 자동 생성
+    /// </summary>
+    public int AddNew(
+      List<int> nodeIDs,
+      int propertyID,
+      Dictionary<string, string>? extraData = null)
+    {
+      int newID = _nextElementID++;
+
+      var element = new Element(nodeIDs, propertyID, extraData);
+      _elements[newID] = element;
+
+      LastElementID = newID;
+      return newID;
+    }
+
+    /// <summary>
+    /// Element 추가 시, 특정 ID로 추가
+    /// </summary>
+    public void AddWithID(
+      int elementID,
+      List<int> nodeIDs,
+      int propertyID,
+      Dictionary<string, string>? extraData = null)
+    {
+      var element = new Element(nodeIDs, propertyID, extraData);
+      _elements[elementID] = element;
+
+      if (elementID >= _nextElementID)
+        _nextElementID = elementID + 1;
+
+      if (elementID > LastElementID)
+        LastElementID = elementID;
+    }
+
+    /// <summary>
+    /// Element 제거 
+    /// </summary>
+    public void Remove(int elementID)
+    {
+      _elements.Remove(elementID);
+
+      if (elementID == LastElementID)
+      {
+        if (_elements.Count > 0)
         {
-          string k = kv.Key ?? "";
-          string v = kv.Value ?? "";
-          return $"{k}={v}";
-        });
-
-      extraPart = $"ExtraData:{{{string.Join(", ", pairs)}}}";
+          LastElementID = _elements.Keys.Max();
+          _nextElementID = LastElementID + 1;
+        }
+        else
+        {
+          LastElementID = 0;
+          _nextElementID = 1;
+        }
+      }
     }
 
-    return $"{nodesPart}, {propPart}, {extraPart}";
-  }
-  public double GetMaxReferencedPropertyDimension(Properties properties)
-  {
-    if (properties == null)
-      throw new ArgumentNullException(nameof(properties));
+    /// <summary>
+    /// 특정 elementID가 존재하는지 확인
+    /// </summary>
+    public bool Contains(int elementID)
+      => _elements.ContainsKey(elementID);
 
-    var prop = properties[this.PropertyID]; // Element가 PropertyID를 가짐 :contentReference[oaicite:1]{index=1}
+    public IEnumerable<int> Keys
+      => _elements.Keys;
 
-    var dim = prop.Dim;
-    if (prop.Type == "I")
+    /// <summary>
+    /// Element 갯수 반환
+    /// </summary>
+    public int Count
+      => _elements.Count;
+
+    /// <summary>
+    /// 특정 Node가 Element 생성에 몇번 사용되었는가
+    /// </summary>
+    public int CountNodeUsage(int nodeID)
     {
-      // I의 경우는 3번째 요소(인덱스 2가 대가리쪽)    
-      var targetDim = Math.Round(dim[2] / 2, 1); // 범위는 절반으로
-      return targetDim;
+      int count = 0;
+      foreach (var element in _elements.Values)
+        if (element.NodeIDs.Contains(nodeID))
+          count++;
+      return count;
     }
-    else if (prop.Type == "T")
+
+    // Elements 클래스 내부에 추가
+    public bool TryGetValue(int id, out Element element)
     {
-      // (T의 경우는 1번째 요소(인덱스 0가 대가리쪽) 
-      var targetDim = Math.Round(dim[2] / 2, 1); // 범위는 절반으로
-      return targetDim;
-    }
-    else
-    {
-      throw new ArgumentException("Error");
+      return _elements.TryGetValue(id, out element);
     }
 
-  }
-}
- public class Elements : IEnumerable<KeyValuePair<int, Element>>
- {
-   private readonly Dictionary<int, Element> _elements = new();
-
-   private int _nextElementID = 1;
-   public int LastElementID { get; private set; } = 0;
-
-   public Elements() { }
-
-   public Element this[int id]
-   {
-     get
-     {
-       if (!_elements.TryGetValue(id, out var element))
-         throw new KeyNotFoundException($"Element ID {id} does not exist.");
-       return element;
-     }
-   }
-  public int AddNew(
-    List<int> nodeIDs,
-    int propertyID,
-    Dictionary<string, string>? extraData = null)
-  {
-    int newID = _nextElementID++;
-
-    var element = new Element(nodeIDs, propertyID, extraData);
-    _elements[newID] = element;
-
-    LastElementID = newID;
-    return newID;
-  }
-  public void AddWithID(
-    int elementID,
-    List<int> nodeIDs,
-    int propertyID,
-    Dictionary<string, string>? extraData = null)
-  {
-    var element = new Element(nodeIDs, propertyID, extraData);
-    _elements[elementID] = element;
-
-    if (elementID >= _nextElementID)
-      _nextElementID = elementID + 1;
-
-    if (elementID > LastElementID)
-      LastElementID = elementID;
-  }
- public void Remove(int elementID)
- {
-   _elements.Remove(elementID);
-
-   if (elementID == LastElementID)
-   {
-     if (_elements.Count > 0)
-     {
-       LastElementID = _elements.Keys.Max();
-       _nextElementID = LastElementID + 1;
-     }
-     else
-     {
-       LastElementID = 0;
-       _nextElementID = 1;
-     }
-   }
- }
-  public bool Contains(int elementID)
-    => _elements.ContainsKey(elementID);
-
-  public IEnumerable<int> Keys
-    => _elements.Keys;
-
-  /// <summary>
-  /// Element 갯수 반환
-  /// </summary>
-  public int Count
-    => _elements.Count;
-
-  /// <summary>
-  /// 특정 Node가 Element 생성에 몇번 사용되었는가
-  /// </summary>
-  public int CountNodeUsage(int nodeID)
-  {
-    int count = 0;
-    foreach (var element in _elements.Values)
-      if (element.NodeIDs.Contains(nodeID))
-        count++;
-    return count;
-  }
+    /// <summary>
+    /// 모든 Node가 Element 사용에 몇번 사용되었는지 딕셔너리로 반환
+    /// </summary>
     public Dictionary<int, int> CountAllNodeUsages()
     {
       var dict = new Dictionary<int, int>();
