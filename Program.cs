@@ -1,7 +1,10 @@
+using MooringFitting2026.Exporters;
 using MooringFitting2026.Inspector;
+using MooringFitting2026.Parsers;
 using MooringFitting2026.Pipeline;
 using MooringFitting2026.Services.Initialization;
 using MooringFitting2026.Services.Logging;
+using MooringFitting2026.Services.Solver;
 using System;
 using System.IO;
 
@@ -22,10 +25,13 @@ namespace MooringFitting2026
       // [설정] 해석 실행 여부
       bool RUN_NASTRAN_SOLVER = false;
 
+      // [설정] 해석 결과를 CSV로 저장할지 여부
+      bool EXPORT_RESULT_CSV = true;
+
       var globalOptions = InspectorOptions.Create()
           .RunUntil(ProcessingStage.All)
           .DisableDebug()
-          .WriteLogToFile(true)
+          .WriteLogToFile(false)
           .SetAllChecks(true)
           .SetThresholds(shortElemDist: 1.0, equivTol: 0.1)
           .Build();
@@ -43,39 +49,72 @@ namespace MooringFitting2026
 
       if (File.Exists(f06Path))
       {
-        Console.WriteLine($"\n[Analysis] Inspecting {f06Name} line by line...");
+        Console.WriteLine($"\n[Analysis] Processing F06 file: {f06Name}");
 
-        // [핵심] File.ReadLines로 메모리 부하 없이 한 줄씩 가져옵니다.
-        int lineIndex = 0;
-        foreach (string line in File.ReadLines(f06Path))
+        // 1) FATAL 에러 먼저 체크
+        if (F06ResultScanner.HasFatalError(f06Path, out string fatalMsg))
         {
-          lineIndex++;
-
-          // =========================================================
-          // [이곳에 중단점을 걸거나 조건을 추가하여 규칙을 찾으세요]
-          // =========================================================
-
-          // 예시 1: 상위 50줄만 찍어보기 (헤더 구조 확인)
-          if (lineIndex <= 50)
-          {
-            Console.WriteLine($"[{lineIndex}] {line}");
-          }
-
-          // 예시 2: 특정 키워드가 나오면 멈추기 (디버깅용)
-          // if (line.Contains("FATAL MESSAGE") || line.Contains("DISPLACEMENT"))
-          // {
-          //     Console.WriteLine($"Found at {lineIndex}: {line}");
-          //     // 여기에 Breakpoint 설정 (F9)
-          // }
+          Console.ForegroundColor = ConsoleColor.Red;
+          Console.WriteLine(fatalMsg);
+          Console.ResetColor();
+          Console.WriteLine(">>> Parsing aborted due to FATAL ERROR.");
         }
+        else
+        {
+          Console.WriteLine(">>> fatal 없음, 정상 Nastran 해석 완료.");
+          // 2) 파서 실행
+          var parser = new F06Parser();
 
-        Console.WriteLine($"[Analysis] Finished scanning {lineIndex} lines.");
+          // 파싱 수행 (로그는 콘솔에 바로 출력)
+          var result = parser.Parse(f06Path, Console.WriteLine);
+
+          // 3) 결과 데이터 확인 (검증용 출력)
+          if (result.IsParsedSuccessfully)
+          {
+            Console.WriteLine("\n------------------------------------------------");
+            Console.WriteLine($"[Parsing Summary] Total Subcases: {result.Subcases.Count}");
+            Console.WriteLine("------------------------------------------------");
+
+            //foreach (var subcase in result.Subcases.Values)
+            //{
+            //  Console.ForegroundColor = ConsoleColor.Cyan;
+            //  Console.WriteLine($"[Subcase {subcase.SubcaseID}]");
+            //  Console.ResetColor();
+
+            //  // 변위 데이터 개수 확인
+            //  var subcaseResult = subcase.BeamStresses;         
+
+            //  // 샘플 데이터 5개만 출력해보기
+            //  if (subcaseResult.Count > 0)
+            //  {
+            //    foreach (var d in subcaseResult.Take(10))
+            //    {
+            //      // ToString() 메서드가 F06Parser.cs에 정의되어 있다고 가정
+            //      Console.WriteLine($"     {d}");            
+            //    }
+            //  }    
+            //}
+            //Console.WriteLine("------------------------------------------------");
+
+            // 4) CSV 내보내기 실행 (요청하신 기능)
+            if (EXPORT_RESULT_CSV)
+            {
+              // 파일명 베이스: "MooringFittingData4235_Result" 등으로 저장됨
+              string exportBaseName = Path.GetFileNameWithoutExtension(inputFileName) + "_Result";
+
+              F06ResultExporter.ExportAll(result, CsvFolderPath, exportBaseName);
+
+              Console.WriteLine("\n>>> [Success] All results have been exported to CSV.");
+            }
+          }
+        }
       }
       else
       {
         Console.WriteLine($"\n[Warning] F06 file not found: {f06Path}");
       }
     }
+    
 
     // -----------------------------------------------------------------------
     // Helper Method: RunPipeline
