@@ -25,6 +25,9 @@ namespace MooringFitting2026.Exporters
 
       // 3. 빔 응력 (Beam Stresses) 내보내기
       ExportBeamStresses(result, outputFolder, baseFileName);
+
+      // 4. [복구됨] 검증용 리포트 (Dim_String 포함)
+      ExportCalculationVerification(result, outputFolder, baseFileName);
     }
 
     private static void ExportDisplacements(F06Parser.F06ResultData result, string folder, string baseName)
@@ -34,7 +37,6 @@ namespace MooringFitting2026.Exporters
 
       using (var sw = new StreamWriter(path, false, Encoding.UTF8))
       {
-        // Header
         sw.WriteLine("SubcaseID,NodeID,Type,T1,T2,T3,R1,R2,R3");
 
         foreach (var subcase in result.Subcases.Values)
@@ -50,7 +52,7 @@ namespace MooringFitting2026.Exporters
       }
 
       if (hasData) Console.WriteLine($"   -> Exported: {Path.GetFileName(path)}");
-      else File.Delete(path); // 데이터 없으면 빈 파일 삭제
+      else File.Delete(path);
     }
 
     private static void ExportBeamForces(F06Parser.F06ResultData result, string folder, string baseName)
@@ -60,7 +62,6 @@ namespace MooringFitting2026.Exporters
 
       using (var sw = new StreamWriter(path, false, Encoding.UTF8))
       {
-        // Header
         sw.WriteLine("SubcaseID,ElementID,GridID,Position,BM1,BM2,Shear1,Shear2,Axial,TotalTorque,WarpingTorque");
 
         foreach (var subcase in result.Subcases.Values)
@@ -87,7 +88,6 @@ namespace MooringFitting2026.Exporters
 
       using (var sw = new StreamWriter(path, false, Encoding.UTF8))
       {
-        // Header
         sw.WriteLine("SubcaseID,ElementID,GridID,Station,S_C,S_D,S_E,S_F,MaxStress,MinStress");
 
         foreach (var subcase in result.Subcases.Values)
@@ -106,6 +106,48 @@ namespace MooringFitting2026.Exporters
       if (hasData) Console.WriteLine($"   -> Exported: {Path.GetFileName(path)}");
       else File.Delete(path);
     }
-   
+
+    // [복구됨] 검증용 리포트 출력 함수
+    private static void ExportCalculationVerification(F06Parser.F06ResultData result, string folder, string baseName)
+    {
+      string path = Path.Combine(folder, $"{baseName}_CalcVerify.csv");
+      bool hasData = false;
+
+      using (var sw = new StreamWriter(path, false, Encoding.UTF8))
+      {
+        // 헤더: 물성치(Area, I)와 검증 데이터(Dim_String) 포함
+        sw.WriteLine("Info,,,,Input_Dimensions,Properties,,,Axial_Check,,,Torsion_Check,,,ShearY_Check,,,ShearZ_Check,,,BendY_Check,,,BendZ_Check,,");
+
+        sw.WriteLine("SubcaseID,ElementID,GridID,Pos,Dim_String," +
+                     "Area,I_Strong,I_Weak," +               // [Properties Group]
+                     "Axial_Force,Area_Ref,Nx_Stress," +     // Nx = Axial / Area
+                     "Torque,Wx,Mx_Stress," +                // Mx = Torque / Wx
+                     "ShearY,Ay,Qy_Stress," +                // Qy = ShearY / Ay
+                     "ShearZ,Az,Qz_Stress," +                // Qz = ShearZ / Az
+                     "MomentY,Wy_Min,My_Stress," +           // My = MomentY / Wy
+                     "MomentZ,Wz_Min,Mz_Stress");            // Mz = MomentZ / Wz
+
+        foreach (var subcase in result.Subcases.Values)
+        {
+          if (subcase.BeamForces.Count == 0) continue;
+          hasData = true;
+
+          foreach (var f in subcase.BeamForces)
+          {
+            sw.WriteLine($"{subcase.SubcaseID},{f.ElementID},{f.GridID},{f.Pos},\"{f.Debug_DimInfo}\"," +
+                         $"{f.Debug_Area},{f.Debug_I_Strong},{f.Debug_I_Weak}," +
+                         $"{f.Axial},{f.Debug_Area},{f.Calc_Nx}," +
+                         $"{f.TotalTorque},{f.Debug_Wx},{f.Calc_Mx}," +
+                         $"{f.Shear1},{f.Debug_Ay},{f.Calc_Qy}," +
+                         $"{f.Shear2},{f.Debug_Az},{f.Calc_Qz}," +
+                         $"{f.BM2},{f.Debug_Wy_Min},{f.Calc_My}," +
+                         $"{f.BM1},{f.Debug_Wz_Min},{f.Calc_Mz}");
+          }
+        }
+      }
+
+      if (hasData) Console.WriteLine($"   -> Exported Verification: {Path.GetFileName(path)}");
+      else File.Delete(path);
+    }
   }
 }
