@@ -77,6 +77,25 @@ namespace MooringFitting2026.Services.Analysis
           // -------------------------------------------------------------
           if (sectionProps != null && sectionProps.Ax > 1e-9)
           {
+            // 1. 관성모멘트 매핑 (Strong/Weak Axis)
+            force.Debug_I_Strong = sectionProps.Iy; // Izz
+            force.Debug_I_Weak = sectionProps.Iz;   // Iyy
+
+            // 2. 치수 정보 문자열 생성 (예: "[100, 200, 10, 15]")
+            if (context.Properties.TryGetValue(propID, out var propEntity))
+            {
+              // 예시 출력 결과: "I: [300, 150, 150, 10, 12, 10]" 또는 "T: [200, 100...]"
+              string typeStr = propEntity.Type; // "I", "T", "PBEAM" 등
+              string dimStr = string.Join(", ", propEntity.Dim);
+
+              // 편하신 포맷으로 조합 (Type과 Dims 결합)
+              force.Debug_DimInfo = $"{typeStr}: [{dimStr}]";
+            }
+            else
+            {
+              force.Debug_DimInfo = "Unknown Property";
+            }
+
             // 1. Axial Stress (Nx = Fx / Ax)
             force.Debug_Area = sectionProps.Ax;
             force.Calc_Nx = Math.Round(force.Axial / sectionProps.Ax, 2);
