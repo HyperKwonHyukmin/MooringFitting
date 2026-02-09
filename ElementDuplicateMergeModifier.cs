@@ -1,5 +1,6 @@
 using MooringFitting2026.Inspector.ElementInspector;
 using MooringFitting2026.Model.Entities;
+using MooringFitting2026.Services.SectionProperties;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -147,204 +148,107 @@ namespace MooringFitting2026.Modifier.ElementModifier
     /// 실제 등가 강성 계산 로직 (선체 구조 전용 매핑 적용)
     /// </summary>
     private static MergedSectionResult CalculateEquivalentProperty(
-        int groupIdx,
-        List<int> elementIDs,
-        Elements allElements,
-        Properties props,
-        StringBuilder csv)
+                int groupIdx, List<int> elementIDs, Elements allElements, Properties props, StringBuilder csv)
     {
       double sumArea = 0.0;
       double sumIzz = 0.0;
       double sumIyy = 0.0;
       double sumJ = 0.0;
 
-      string nodeInfo = "Unknown";
-      if (elementIDs.Count > 0 && allElements.Contains(elementIDs[0]))
-      {
-        var ids = allElements[elementIDs[0]].NodeIDs;
-        nodeInfo = $"[{ids[0]}-{ids[1]}]";
-      }
+      // [NEW] 응력 계산용 합산 변수
+      double sumAy = 0.0;
+      double sumAz = 0.0;
+      double sumWx = 0.0; // Torsion Modulus Sum
+
+      // 단면계수 W는 단순 합산이 안되지만, 안전측 설계를 위해
+      // "전체 I / 최대 거리" 개념으로 접근하거나, 개별 W의 합으로 근사
+      // 여기서는 개별 형상의 W를 구해서 합산하는 방식을 택함 (보수적 접근)
+      double sumWy = 0.0;
+      double sumWz = 0.0;
 
       foreach (var eid in elementIDs)
       {
         if (!allElements.Contains(eid)) continue;
-
         var ele = allElements[eid];
-        double a = 0, izz = 0, iyy = 0, j = 0;
-        string type = "Unknown";
-        string note = "Raw";
-        string dimStr = "";
         int pid = ele.PropertyID;
 
         if (props.Contains(pid))
         {
           var p = props[pid];
-          type = p.Type.ToUpper();
           var dim = p.Dim;
 
-          if (type == "PBEAM" || type == "EQUIV_PBEAM")
+          // 형상별 계산기 호출
+          BeamSectionCalculator.BeamDimensions d = null;
+
+          if (p.Type == "I" && dim.Count >= 6)
           {
-            if (dim.Count > 0) a = dim[0];
-            if (dim.Count > 1) izz = dim[1];
-            if (dim.Count > 2) iyy = dim[2];
-            if (dim.Count > 3) j = dim[3];
-            dimStr = "Pre-calculated";
-            note = "Direct";
-          }
-          // -----------------------------------------------------------------------
-          // [수정] 선체 구조용 T-Type 매핑 (W가 먼저 옴: Deck Width)
-          // Data: 750, 228.6, 10, 18 -> W_top, H, tw, tf_top
-          // -----------------------------------------------------------------------
-          else if (type == "T")
-          {
-            if (dim.Count >= 4)
+            d = new BeamSectionCalculator.BeamDimensions
             {
-              double W_top = dim[0]; // Deck Width (750)
-              double H = dim[1];     // Height (228.6)
-              double tw = dim[2];    // Web Thickness (10)
-              double tf_top = dim[3]; // Deck Thickness (18)
-
-              dimStr = $"W_top={W_top}; H={H}; tw={tw}; tf_top={tf_top}";
-
-              // Area
-              a = (W_top * tf_top) + ((H - tf_top) * tw);
-
-              // Centroid (from bottom)
-              double h_web = H - tf_top;
-              double A_web = h_web * tw;
-              double y_web = h_web / 2.0; // Web center
-
-              double A_flange = W_top * tf_top;
-              double y_flange = h_web + tf_top / 2.0; // Flange center
-
-              double y_bar = (A_web * y_web + A_flange * y_flange) / a;
-
-              // Izz (Strong Axis)
-              double I_web = (tw * Math.Pow(h_web, 3)) / 12.0 + A_web * Math.Pow(y_web - y_bar, 2);
-              double I_flange = (W_top * Math.Pow(tf_top, 3)) / 12.0 + A_flange * Math.Pow(y_flange - y_bar, 2);
-              izz = I_web + I_flange;
-
-              // Iyy (Weak Axis) - Symmetric about web
-              double Iyy_web = (h_web * Math.Pow(tw, 3)) / 12.0;
-              double Iyy_flange = (tf_top * Math.Pow(W_top, 3)) / 12.0;
-              iyy = Iyy_web + Iyy_flange;
-
-              // J (St. Venant) - Open Section Summation
-              j = (1.0 / 3.0) * (W_top * Math.Pow(tf_top, 3) + h_web * Math.Pow(tw, 3));
-
-              note = "Ship_T (Deck+Web)";
-            }
+              Hw = dim[0] - dim[3] - dim[5], // H - Tt - Tb
+              Bb = dim[1],
+              Bt = dim[2],
+              Tt = dim[3],
+              Tw = dim[4],
+              Tb = dim[5]
+            };
           }
-          // -----------------------------------------------------------------------
-          // [수정] 선체 구조용 I-Type 매핑 (Asymmetric, Deck + I-Stiffener)
-          // Data: 154.9, 90, 750, 20... -> H, W_bot, W_top, tf_top, tw, tf_bot
-          // -----------------------------------------------------------------------
-          else if (type == "I")
+          else if (p.Type == "T" && dim.Count >= 4)
           {
-            if (dim.Count >= 6) // Ensure we have all dims
+            d = new BeamSectionCalculator.BeamDimensions
             {
-              double H = dim[0];      // 154.9
-              double W_bot = dim[1];  // 90
-              double W_top = dim[2];  // Deck Width (750)
-              double tf_top = dim[3]; // Deck Thickness (20)
-              double tw = dim[4];     // 10
-              double tf_bot = dim[5]; // 10
-
-              dimStr = $"H={H}; Wb={W_bot}; Wt={W_top}; tft={tf_top}; tw={tw}; tfb={tf_bot}";
-
-              double h_web = H - tf_top - tf_bot;
-              if (h_web < 0) h_web = 0; // Safety check
-
-              // Area
-              double A_top = W_top * tf_top;
-              double A_bot = W_bot * tf_bot;
-              double A_web = h_web * tw;
-              a = A_top + A_bot + A_web;
-
-              // Centroid (from bottom)
-              double y_bot = tf_bot / 2.0;
-              double y_web = tf_bot + h_web / 2.0;
-              double y_top = tf_bot + h_web + tf_top / 2.0;
-
-              double y_bar = (A_bot * y_bot + A_web * y_web + A_top * y_top) / a;
-
-              // Izz (Strong Axis)
-              double Izz_bot = (W_bot * Math.Pow(tf_bot, 3)) / 12.0 + A_bot * Math.Pow(y_bot - y_bar, 2);
-              double Izz_web = (tw * Math.Pow(h_web, 3)) / 12.0 + A_web * Math.Pow(y_web - y_bar, 2);
-              double Izz_top = (W_top * Math.Pow(tf_top, 3)) / 12.0 + A_top * Math.Pow(y_top - y_bar, 2);
-              izz = Izz_bot + Izz_web + Izz_top;
-
-              // Iyy (Weak Axis)
-              double Iyy_bot = (tf_bot * Math.Pow(W_bot, 3)) / 12.0;
-              double Iyy_web = (h_web * Math.Pow(tw, 3)) / 12.0;
-              double Iyy_top = (tf_top * Math.Pow(W_top, 3)) / 12.0;
-              iyy = Iyy_bot + Iyy_web + Iyy_top;
-
-              // J
-              j = (1.0 / 3.0) * (W_top * Math.Pow(tf_top, 3) + W_bot * Math.Pow(tf_bot, 3) + h_web * Math.Pow(tw, 3));
-
-              note = "Ship_I (Asym)";
-            }
-            else
-            {
-              // 데이터 부족 시 Fallback (로그에 남김)
-              dimStr = $"Missing Data (Count={dim.Count})";
-              note = "Error_I (Dim<6)";
-            }
+              Bt = dim[0],
+              Hw = dim[1] - dim[2], // H - Tt
+              Tt = dim[2],
+              Tw = dim[3],
+              Bb = 0,
+              Tb = 0
+            };
           }
-          else if (type == "ANGLE" || type == "L")
+          // TODO: Angle, Flatbar도 필요하면 Dimensions 매핑 추가
+
+          if (d != null)
           {
-            // Angle의 경우 표준 매핑 유지 (필요 시 수정 가능)
-            if (dim.Count >= 4)
-            {
-              double H = dim[0]; double W = dim[1];
-              double t1 = dim[2]; double t2 = dim[3];
-              dimStr = $"H={H}; W={W}; t1={t1}; t2={t2}";
-              a = (H * t1) + ((W - t1) * t2);
-              izz = (t1 * Math.Pow(H, 3)) / 12.0;
-              iyy = (t2 * Math.Pow(W, 3)) / 12.0;
-              j = (1.0 / 3.0) * (H * Math.Pow(t1, 3) + W * Math.Pow(t2, 3));
-              note = "Angle";
-            }
+            var res = BeamSectionCalculator.Calculate(d);
+
+            sumArea += res.Ax;
+            sumIzz += res.Iy; // Strong Axis
+            sumIyy += res.Iz; // Weak Axis
+            sumJ += res.Ix;
+
+            // [NEW] 응력 파라미터 합산
+            sumAy += res.Ay;
+            sumAz += res.Az;
+            sumWx += res.Wx;
+            sumWy += Math.Min(res.Wyb, res.Wyt); // 보수적으로 작은 값 사용
+            sumWz += Math.Min(res.Wzb, res.Wzt);
           }
-          else if (type == "FLATBAR" || type == "BAR")
+          else if (p.Type == "PBEAM" || p.Type == "EQUIV_PBEAM")
           {
-            if (dim.Count >= 2)
+            // 이미 PBEAM인 경우 있는 값만 더함
+            if (dim.Count > 0) sumArea += dim[0];
+            if (dim.Count > 1) sumIzz += dim[1];
+            if (dim.Count > 2) sumIyy += dim[2];
+            if (dim.Count > 3) sumJ += dim[3];
+            // W, Ay, Az 정보가 있다면 더함 (재귀적 병합 대응)
+            if (dim.Count > 8)
             {
-              double H = dim[0]; double T = dim[1];
-              dimStr = $"H={H}; T={T}";
-              a = H * T;
-              izz = (T * Math.Pow(H, 3)) / 12.0;
-              iyy = (H * Math.Pow(T, 3)) / 12.0;
-              j = (1.0 / 3.0) * H * Math.Pow(T, 3);
-              note = "FlatBar";
+              sumWy += dim[4]; sumWz += dim[5];
+              sumAy += dim[6]; sumAz += dim[7]; sumWx += dim[8];
             }
-          }
-          else
-          {
-            dimStr = "Unknown Type";
-            if (dim.Count > 0) a = dim[0];
-            if (dim.Count > 1) izz = dim[1];
-            if (dim.Count > 2) iyy = dim[2];
-            if (dim.Count > 3) j = dim[3];
-            note = "Direct_Fallback";
           }
         }
-
-        // CSV 로그 기록
-        csv.AppendLine($"{groupIdx},{nodeInfo},{eid},{pid},{type},{dimStr},{a:F4},{izz:F4},{iyy:F4},{j:F4},{note}");
-
-        sumArea += a;
-        sumIzz += izz;
-        sumIyy += iyy;
-        sumJ += j;
       }
 
-      // 합계 행
-      csv.AppendLine($"{groupIdx},{nodeInfo},MERGED,NEW,EQUIV,,{sumArea:F4},{sumIzz:F4},{sumIyy:F4},{sumJ:F4},Total Sum");
-      return new MergedSectionResult(sumArea, sumIzz, sumIyy, sumJ);
+      // 만약 형상 정보가 없어서 W가 0이면, 근사식 사용 (안전장치)
+      // W = I / (Estimated_H / 2) -> 형상 정보가 다 날아갔으므로 정확하진 않음
+      if (sumWy < 1e-9 && sumIzz > 0) sumWy = sumIzz / 100.0; // 임의 값 방지용 (경고 필요)
+      if (sumWz < 1e-9 && sumIyy > 0) sumWz = sumIyy / 100.0;
+
+      return new MergedSectionResult(sumArea, sumIzz, sumIyy, sumJ, sumWy, sumWz, sumAy, sumAz, sumWx);
     }
 
-    private record MergedSectionResult(double Area, double Izz, double Iyy, double J);
+    private record MergedSectionResult(
+        double Area, double Izz, double Iyy, double J,
+        double Wy_min, double Wz_min, double Ay, double Az, double Wx);
   }
 }
