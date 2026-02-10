@@ -5,6 +5,7 @@ using MooringFitting2026.Utils.Geometry;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Xml.Linq;
 
 namespace MooringFitting2026.Modifier.ElementModifier
 {
@@ -25,7 +26,23 @@ namespace MooringFitting2026.Modifier.ElementModifier
       log($"[Stage 06] Generating Mooring Fitting Connections (Expanded Bounding Box Mode)...");
 
       var nodes = context.Nodes;
+      var elements = context.Elements;
       var spcSet = (spcNodeIDs != null) ? new HashSet<int>(spcNodeIDs) : new HashSet<int>();
+
+      var nodeToPropMap = new Dictionary<int, int>();
+
+      foreach (var kv in elements)
+      {
+        var elem = kv.Value;
+
+        foreach (var nid in elem.NodeIDs)
+        {
+          if (!nodeToPropMap.ContainsKey(nid))
+          {
+            nodeToPropMap[nid] = elem.PropertyID;
+          }
+        }
+      }
 
       int nextRigidID = 900001;
       if (context.Elements.Count > 0)
@@ -48,7 +65,37 @@ namespace MooringFitting2026.Modifier.ElementModifier
         // SPC 노드 제외
         if (spcSet.Count > 0)
         {
+          // A. 제외 대상(SPC) 노드 식별
+          var excludedSpcNodes = depNodeIDs.Where(id => spcSet.Contains(id)).ToList();
+
+          // B. 리스트에서 제거 (기존 로직)
           depNodeIDs.RemoveAll(id => spcSet.Contains(id));
+
+          // C. 제외된 노드에 대해 Z+100 요소 생성 (추가된 로직)
+          foreach (var spcNodeID in excludedSpcNodes)
+          {
+            if (!nodes.Contains(spcNodeID)) continue;
+
+            // 1) 기준 노드 좌표
+            var basePt = nodes[spcNodeID];
+
+            // 2) 상단 노드 생성 (Z + 100)
+            int topNodeID = nodes.AddOrGet(basePt.X, basePt.Y, basePt.Z + 100.0);
+
+            // 3) Property ID 찾기 (해당 SPC 노드에 연결되어 있던 기존 요소의 속성 사용)
+            // 만약 찾을 수 없다면 기본값(예: 1) 사용 혹은 에러 처리
+            int targetPropID = nodeToPropMap.TryGetValue(spcNodeID, out int pid) ? pid : 1;
+
+            // 4) 요소 생성 (SPC Node -> Top Node)
+            // ExtraData에 생성 사유 기록
+            var extraData = new Dictionary<string, string> { { "Type", "SPC_Vertical_Extension" } };
+
+            // 요소 추가 (Elements.AddNew는 내부적으로 ID 자동 증가)
+            context.Elements.AddNew(new List<int> { spcNodeID, topNodeID }, targetPropID, extraData);
+
+            // (선택) 로그 출력
+            // log($"    -> [Auto-Gen] SPC Extension Element created at Node {spcNodeID} (PropID: {targetPropID})");
+          }
         }
 
         if (depNodeIDs.Count == 0)
