@@ -19,16 +19,21 @@ namespace MooringFitting2026
       // 1. 설정 (Configuration)
       // =======================================================================
       // [경로 설정] 테스트 환경에 맞게 경로를 확인해주세요.
-      string Data = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part1\2026Ver\MooringFittingData4235.csv";
-      string DataLoad = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part1\2026Ver\MooringFittingDataLoad4235.csv";
+      //string Data = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part1\2026Ver\MooringFittingData4235.csv";
+      //string DataLoad = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\Part1\2026Ver\MooringFittingDataLoad4235.csv";
+      string Data = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\26_03\MooringFittingData.csv";
+      string DataLoad = @"C:\Coding\Csharp\Projects\MooringFitting\TestCSV\26_03\MooringFittingDataLoad.csv";
       string CsvFolderPath = Path.GetDirectoryName(Data);
       string inputFileName = Path.GetFileName(Data);
 
       // [설정] 해석 실행 여부
-      bool RUN_NASTRAN_SOLVER = false;
+      bool RUN_NASTRAN_SOLVER = true;
 
       // [설정] 해석 결과를 CSV로 저장할지 여부
       bool EXPORT_RESULT_CSV = true;
+
+      // [설정] 모델 CenterLine에 SPC 설정
+      bool EnableAutoBottomSPC = true;
 
       var globalOptions = InspectorOptions.Create()
           .RunUntil(ProcessingStage.All)
@@ -57,8 +62,8 @@ namespace MooringFitting2026
 
         // 2. 파이프라인 실행 (Context 전달)
         var pipeline = new FeModelProcessPipeline(
-            feModelContext, rawStructureData, winchData, globalOptions, CsvFolderPath, inputFileName, RUN_NASTRAN_SOLVER
-        );
+            feModelContext, rawStructureData, winchData, globalOptions, CsvFolderPath, inputFileName, RUN_NASTRAN_SOLVER,
+            EnableAutoBottomSPC);
         pipeline.Run();
 
         // 3. F06 파싱 및 후처리
