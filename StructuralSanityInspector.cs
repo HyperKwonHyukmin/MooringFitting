@@ -3,52 +3,45 @@ using MooringFitting2026.Inspector.NodeInspector;
 using MooringFitting2026.Model.Entities;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 
 namespace MooringFitting2026.Inspector
 {
   /// <summary>
-  /// FE 모델의 구조적 건전성(무결성)을 검사하는 클래스입니다.
+  /// FE 모델의 구조적 건전성(무결성)을 검사하고, 치명적인 오류를 자동 복구하는 클래스입니다.
   /// </summary>
   public static class StructuralSanityInspector
   {
     /// <summary>
     /// 모델 전체 검사를 수행하고 결과를 콘솔에 출력합니다.
-    /// 반환값: 경계조건(SPC) 생성을 위한 자유단 노드 리스트 (RBE 종속 노드 제외됨)
+    /// (outputDir가 제공되면 삭제된 불량 요소 로그를 CSV로 저장합니다.)
     /// </summary>
     public static List<int> Inspect(
         FeModelContext context,
         InspectorOptions opt,
         HashSet<int>? protectedNodes = null,
-        HashSet<int>? rbeDependentNodes = null)
+        HashSet<int>? rbeDependentNodes = null,
+        string outputDir = null)
     {
       if (context is null) throw new ArgumentNullException(nameof(context));
       opt ??= InspectorOptions.Default;
-
-      // =======================================================================
-      // [수정된 부분 시작] 옵션 확인 및 조기 종료 로직 추가
-      // =======================================================================
 
       // 1. 활성화된 검사가 하나라도 있는지 확인
       bool anyCheckEnabled = opt.CheckTopology || opt.CheckGeometry ||
                              opt.CheckEquivalence || opt.CheckDuplicate ||
                              opt.CheckIntegrity || opt.CheckIsolation;
 
-      // 2. 모든 검사가 꺼져있고, 디버그 모드도 아니라면 아무것도 출력하지 않고 종료
+      // 2. 모든 검사가 꺼져있고, 디버그 모드도 아니라면 종료
       if (!anyCheckEnabled && !opt.DebugMode)
       {
-        return new List<int>(); // 빈 리스트 반환 (조용히 종료)
+        return new List<int>();
       }
 
-      // =======================================================================
-      // [수정된 부분 끝]
-      // =======================================================================
-
-      Console.WriteLine("\n[구조 건전성 검사 시작]");
+      Console.WriteLine("\n[구조 건전성 검사 및 복구 시작]");
       if (opt.DebugMode) Console.WriteLine("  * 디버그 모드: 켜짐 (상세 로그 출력)");
       Console.WriteLine("--------------------------------------------------");
 
-      // 자유단 노드 리스트 (반환용)
       List<int> freeEndNodes = new List<int>();
 
       // 1. 위상학적 연결성 검사 (Topology)
@@ -75,10 +68,10 @@ namespace MooringFitting2026.Inspector
         InspectDuplicate(context, opt);
       }
 
-      // 5. 데이터 무결성 검사 (참조 오류)
+      // 5. 데이터 무결성 검사 (★ 자동 복구 기능 내장)
       if (opt.CheckIntegrity)
       {
-        InspectIntegrity(context, opt);
+        InspectIntegrity(context, opt, outputDir);
       }
 
       // 6. 고립 요소 검사 (Isolation)
@@ -93,7 +86,7 @@ namespace MooringFitting2026.Inspector
     }
 
     // --------------------------------------------------------------------------
-    // (이하 private 메서드들은 기존 코드와 동일하므로 그대로 유지하면 되네)
+    // Private Inspection Methods
     // --------------------------------------------------------------------------
 
     private static List<int> InspectTopology(
@@ -102,7 +95,6 @@ namespace MooringFitting2026.Inspector
         HashSet<int>? protectedNodes,
         HashSet<int>? rbeDependentNodes)
     {
-      // ... (기존 코드 유지) ...
       // 01. Element 그룹 연결성 확인
       var connectedGroups = ElementConnectivityInspector.FindConnectedElementGroups(context.Elements);
       if (connectedGroups.Count <= 1)
@@ -124,7 +116,8 @@ namespace MooringFitting2026.Inspector
         int excludedCount = initialCount - endNodes.Count;
         if (excludedCount > 0)
         {
-          Console.WriteLine($"      [SPC 제외] RBE 종속 노드 {excludedCount}개를 자유단 목록에서 제외했습니다. (이중 구속 방지)");
+          if (opt.DebugMode)
+            Console.WriteLine($"      [SPC 제외] RBE 종속 노드 {excludedCount}개를 자유단 목록에서 제외했습니다.");
         }
       }
 
@@ -156,7 +149,6 @@ namespace MooringFitting2026.Inspector
       else
       {
         LogWarning($"03 - 기하 형상 : 길이가 {opt.ShortElementDistanceThreshold} 미만인 짧은 요소가 {shortElements.Count}개 발견되었습니다.");
-
         if (opt.DebugMode)
         {
           var elementIds = shortElements.Select(t => t.eleId).ToList();
@@ -221,7 +213,8 @@ namespace MooringFitting2026.Inspector
       }
     }
 
-    private static void InspectIntegrity(FeModelContext context, InspectorOptions opt)
+    // ★ [수정됨] 데이터 무결성 검사 및 자동 복구
+    private static void InspectIntegrity(FeModelContext context, InspectorOptions opt, string outputDir)
     {
       var invalidElements = ElementIntegrityInspector.FindElementsWithInvalidReference(context);
 
@@ -231,11 +224,55 @@ namespace MooringFitting2026.Inspector
         return;
       }
 
-      LogCritical($"06 - 데이터 무결성 : 존재하지 않는 노드나 속성을 참조하는 요소가 {invalidElements.Count}개 있습니다.");
-      if (opt.DebugMode)
+      // 로그 메시지 (복구 알림)
+      Console.ForegroundColor = ConsoleColor.Magenta;
+      Console.WriteLine($"[복구] 06 - 데이터 무결성 : 존재하지 않는 노드/속성 참조 요소 {invalidElements.Count}개를 삭제합니다.");
+      Console.ResetColor();
+
+      // CSV 로그 기록
+      if (!string.IsNullOrEmpty(outputDir))
       {
-        Console.WriteLine($"     IDs: {SummarizeIds(invalidElements, opt)}");
+        string logPath = Path.Combine(outputDir, "Deleted_Invalid_Elements.csv");
+        try
+        {
+          using (var sw = new StreamWriter(logPath, false, System.Text.Encoding.UTF8))
+          {
+            sw.WriteLine("ElementID,PropertyID,Reason,NodeIDs");
+            foreach (var eid in invalidElements)
+            {
+              if (context.Elements.TryGetValue(eid, out var elem))
+              {
+                string nodes = string.Join(";", elem.NodeIDs);
+                sw.WriteLine($"{eid},{elem.PropertyID},Invalid_Reference,{nodes}");
+              }
+              else
+              {
+                sw.WriteLine($"{eid},Unknown,Already_Missing,");
+              }
+            }
+          }
+          Console.WriteLine($"      -> [기록] 삭제된 요소 목록을 저장했습니다: {Path.GetFileName(logPath)}");
+        }
+        catch (Exception ex)
+        {
+          Console.WriteLine($"      -> [오류] 로그 저장 실패: {ex.Message}");
+        }
       }
+
+      // 요소 삭제 (자동 복구)
+      int deletedCount = 0;
+      foreach (var eid in invalidElements)
+      {
+        // ★ [수정] Elements.Remove는 void이므로 if문 조건으로 쓸 수 없음
+        // 존재 여부를 확인하고 삭제
+        if (context.Elements.Contains(eid))
+        {
+          context.Elements.Remove(eid);
+          deletedCount++;
+        }
+      }
+
+      Console.WriteLine($"      -> [완료] 총 {deletedCount}개의 불량 요소를 모델에서 제거했습니다.");
     }
 
     private static void InspectIsolation(FeModelContext context, InspectorOptions opt)
@@ -254,6 +291,10 @@ namespace MooringFitting2026.Inspector
         Console.WriteLine($"     IDs: {SummarizeIds(isolation, opt)}");
       }
     }
+
+    // --------------------------------------------------------------------------
+    // Helpers
+    // --------------------------------------------------------------------------
 
     private static void PrintNodeStat(string title, List<int> nodes, InspectorOptions opt, bool isWarning)
     {
@@ -280,25 +321,6 @@ namespace MooringFitting2026.Inspector
       return str;
     }
 
-    private static void LogPass(string msg)
-    {
-      Console.WriteLine($"[통과] {msg}");
-    }
-
-    private static void LogWarning(string msg)
-    {
-      Console.ForegroundColor = ConsoleColor.Yellow;
-      Console.WriteLine($"[주의] {msg}");
-      Console.ResetColor();
-    }
-
-    private static void LogCritical(string msg)
-    {
-      Console.ForegroundColor = ConsoleColor.Red;
-      Console.WriteLine($"[실패] {msg}");
-      Console.ResetColor();
-    }
-
     private static int RemoveOrphanNodesByElementConnection(
         FeModelContext context,
         List<int> isolatedNodes,
@@ -319,6 +341,25 @@ namespace MooringFitting2026.Inspector
         }
       }
       return removed;
+    }
+
+    private static void LogPass(string msg)
+    {
+      Console.WriteLine($"[통과] {msg}");
+    }
+
+    private static void LogWarning(string msg)
+    {
+      Console.ForegroundColor = ConsoleColor.Yellow;
+      Console.WriteLine($"[주의] {msg}");
+      Console.ResetColor();
+    }
+
+    private static void LogCritical(string msg)
+    {
+      Console.ForegroundColor = ConsoleColor.Red;
+      Console.WriteLine($"[실패] {msg}");
+      Console.ResetColor();
     }
   }
 }
