@@ -4,6 +4,7 @@ using MooringFitting2026.Inspector;
 using MooringFitting2026.Inspector.ElementInspector;
 using MooringFitting2026.Inspector.NodeInspector;
 using MooringFitting2026.Model.Entities;
+using MooringFitting2026.Model.Geometry;
 using MooringFitting2026.Modifier.ElementModifier;
 using MooringFitting2026.Modifier.NodeModifier;
 using MooringFitting2026.Parsers; // [추가] F06Parser 사용
@@ -75,13 +76,6 @@ namespace MooringFitting2026.Pipeline
 
       // ★ [수정 1] spcList 변수 선언 및 초기화 (이 위치에 추가)
       List<string> spcList = new List<string>();
-
-      // ★ [수정 2] 자동 SPC 생성 로직 (옵션 제어)
-      if (_enableAutoBottomSPC)
-      {
-        // 파라미터: (spcList, SPC ID: 1, Y축 허용오차: 1.0, X방향 최소길이: 50.0)
-        GenerateAutoBottomSPC(spcList, spcId: 1, yTol: 1.0, minLenX: 50.0);
-      }
     }
 
     private void ExportBaseline()
@@ -142,6 +136,24 @@ namespace MooringFitting2026.Pipeline
       // [Stage 06] 하중 생성 및 최종 해석 (파일명 커스텀 적용)
       if (_inspectOpt.ActiveStages.HasFlag(ProcessingStage.Stage06_LoadGeneration))
       {
+        if (_enableAutoBottomSPC)
+        {
+          // (허용오차 1.0, 길이 50.0 등은 상황에 맞게 조절)
+          var bottomNodes = GetAutoBottomSPCNodes(1.0, 50.0);
+
+          if (bottomNodes.Count > 0)
+          {
+            // 기존 리스트가 null이면 초기화
+            if (_lastSpcList == null) _lastSpcList = new List<int>();
+
+            // 합치기 (중복 제거)
+            _lastSpcList.AddRange(bottomNodes);
+            _lastSpcList = _lastSpcList.Distinct().ToList();
+
+            Console.WriteLine($"   -> [Merged] Added {bottomNodes.Count} Auto-Bottom SPC nodes to final export list.");
+          }
+        }
+
         // 원본 파일명(확장자 제외) 추출: 예) "MooringFittingData4235"
         string customBdfName = Path.GetFileNameWithoutExtension(_inputCsvFileName);
 
@@ -392,61 +404,49 @@ namespace MooringFitting2026.Pipeline
       }
     }
 
-    private void GenerateAutoBottomSPC(List<string> spcList, int spcId, double yTol, double minLenX)
+    private List<int> GetAutoBottomSPCNodes(double yTol, double minLenX)
     {
-      Console.WriteLine($"\n>>> [Auto SPC] Detecting elements at Min Y (Long in X-Axis)...");
+      Console.WriteLine($"\n>>> [Auto SPC] Detecting elements at Bottom (Min Y)...");
 
       var nodes = _context.Nodes;
       var elements = _context.Elements;
+      var resultNodeIDs = new HashSet<int>();
 
-      // ★ [수정 3] Count 뒤에 괄호()를 붙이거나 GetNodeCount() 사용
-      // (Nodes 클래스 구조상 Count가 메서드이거나 LINQ 확장 메서드인 경우임)
-      if (nodes.GetNodeCount() == 0) return;
+      if (nodes.GetNodeCount() == 0) return new List<int>();
 
-      // 1. 전체 노드 중 Y좌표의 최소값(Min Y) 찾기
+      // 1. Min Y 찾기
       double globalMinY = nodes.Min(n => n.Value.Y);
-      Console.WriteLine($"   -> Global Min Y: {globalMinY:F3}");
+      Console.WriteLine($"   -> Global Min Y Detected: {globalMinY:F3}");
 
-      // ... (이하 로직 동일) ...
-
-      var targetNodeIDs = new HashSet<int>();
-      int elementCount = 0;
-
+      // 2. 조건 만족 요소 찾기
       foreach (var kv in elements)
       {
         var elem = kv.Value;
-        if (elem.NodeIDs.Count < 2) continue; // List<int>의 Count는 속성이므로 괄호 없음 (정상)
+        if (elem.NodeIDs.Count < 2) continue;
 
-        // 해당 요소의 노드들 좌표 가져오기
-        var elemNodes = elem.NodeIDs.Select(id => nodes[id]).ToList();
-
-        // [조건 A] 높이 검사
-        bool isAtBottom = elemNodes.All(p => Math.Abs(p.Y - globalMinY) < yTol);
-        if (!isAtBottom) continue;
-
-        // [조건 B] 길이 검사
-        double minX = elemNodes.Min(p => p.X);
-        double maxX = elemNodes.Max(p => p.X);
-        double lenX = Math.Abs(maxX - minX);
-
-        if (lenX >= minLenX)
+        // 노드 좌표 가져오기 (Geometry 네임스페이스 명시 불필요하게 var 사용)
+        var points = new List<Point3D>();
+        bool missing = false;
+        foreach (var nid in elem.NodeIDs)
         {
-          foreach (var nid in elem.NodeIDs) targetNodeIDs.Add(nid);
-          elementCount++;
+          if (nodes.Contains(nid)) points.Add(nodes[nid]);
+          else { missing = true; break; }
         }
+        if (missing) continue;
+
+        // [Check 1] 높이 검사
+        if (!points.All(p => Math.Abs(p.Y - globalMinY) <= yTol)) continue;
+
+        // [Check 2] 길이 검사
+        double lenX = Math.Abs(points.Max(p => p.X) - points.Min(p => p.X));
+        if (lenX < minLenX) continue;
+
+        // 조건 만족 시 노드 추가
+        foreach (var nid in elem.NodeIDs) resultNodeIDs.Add(nid);
       }
 
-      // SPC 구문 생성
-      int addedCount = 0;
-      foreach (var nid in targetNodeIDs)
-      {
-        string bdfLine = $"SPC,{spcId},{nid},123456,0.0";
-        spcList.Add(bdfLine);
-        addedCount++;
-      }
-
-      Console.WriteLine($"   -> Detected {elementCount} elements (Long-X at Bottom).");
-      Console.WriteLine($"   -> Generated {addedCount} SPCs at Min Y={globalMinY:F1}.");
+      Console.WriteLine($"   -> Found {resultNodeIDs.Count} nodes for Auto SPC.");
+      return resultNodeIDs.ToList();
     }
 
   }
