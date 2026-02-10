@@ -1,7 +1,9 @@
 using MooringFitting2026.Exporters;
 using MooringFitting2026.Inspector;
+using MooringFitting2026.Model.Entities;
 using MooringFitting2026.Parsers;
 using MooringFitting2026.Pipeline;
+using MooringFitting2026.Services.Analysis;
 using MooringFitting2026.Services.Initialization;
 using MooringFitting2026.Services.Logging;
 using MooringFitting2026.Services.Solver;
@@ -31,90 +33,82 @@ namespace MooringFitting2026
       var globalOptions = InspectorOptions.Create()
           .RunUntil(ProcessingStage.All)
           .DisableDebug()
-          .WriteLogToFile(false)
+          .WriteLogToFile(true)
           .SetAllChecks(true)
           .SetThresholds(shortElemDist: 1.0, equivTol: 0.1)
           .Build();
 
-      // 2. 파이프라인 실행 (Execution)
-      // =======================================================================
-      // 파이프라인은 모델 생성 및 BDF Export, (옵션에 따라) Solver 실행을 담당합니다.
-      RunPipeline(Data, DataLoad, CsvFolderPath, inputFileName, globalOptions, RUN_NASTRAN_SOLVER);
+      StreamWriter logFileWriter = null;
+      TextWriter originalConsoleOut = Console.Out;
 
-      // 3. 결과 탐색 (Post-Processing)
-      // =======================================================================
-      // [수정] Solver 실행 여부와 관계없이 F06 파일이 존재하면 탐색기를 엽니다.
-      string f06Name = Path.GetFileNameWithoutExtension(inputFileName) + ".f06";
-      string f06Path = Path.Combine(CsvFolderPath, f06Name);
-
-      if (File.Exists(f06Path))
+      try
       {
-        Console.WriteLine($"\n[Analysis] Processing F06 file: {f06Name}");
-
-        // 1) FATAL 에러 먼저 체크
-        if (F06ResultScanner.HasFatalError(f06Path, out string fatalMsg))
+        // [변경] 로그 설정 및 모델 로딩을 Main에서 수행
+        if (globalOptions.EnableFileLogging && !string.IsNullOrEmpty(CsvFolderPath))
         {
-          Console.ForegroundColor = ConsoleColor.Red;
-          Console.WriteLine(fatalMsg);
-          Console.ResetColor();
-          Console.WriteLine(">>> Parsing aborted due to FATAL ERROR.");
+          string logPath = Path.Combine(CsvFolderPath, $"Log_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
+          logFileWriter = new StreamWriter(logPath, false, System.Text.Encoding.UTF8) { AutoFlush = true };
+          Console.SetOut(new MultiTextWriter(originalConsoleOut, logFileWriter));
         }
-        else
+
+        // [중요] 여기서 feModelContext를 생성해야 나중에 PostProcessor에서 쓸 수 있음
+        var (feModelContext, rawStructureData, winchData) =
+                FeModelLoader.LoadAndBuild(Data, DataLoad, debugMode: globalOptions.DebugMode);
+
+        // 2. 파이프라인 실행 (Context 전달)
+        var pipeline = new FeModelProcessPipeline(
+            feModelContext, rawStructureData, winchData, globalOptions, CsvFolderPath, inputFileName, RUN_NASTRAN_SOLVER
+        );
+        pipeline.Run();
+
+        // 3. F06 파싱 및 후처리
+        string f06Name = Path.GetFileNameWithoutExtension(inputFileName) + ".f06";
+        string f06Path = Path.Combine(CsvFolderPath, f06Name);
+
+        if (File.Exists(f06Path))
         {
-          Console.WriteLine(">>> fatal 없음, 정상 Nastran 해석 완료.");
-          // 2) 파서 실행
-          var parser = new F06Parser();
+          Console.WriteLine($"\n[Analysis] Processing F06 file: {f06Name}");
 
-          // 파싱 수행 (로그는 콘솔에 바로 출력)
-          var result = parser.Parse(f06Path, Console.WriteLine);
-
-          // 3) 결과 데이터 확인 (검증용 출력)
-          if (result.IsParsedSuccessfully)
+          if (!F06ResultScanner.HasFatalError(f06Path, out string fatalMsg))
           {
-            Console.WriteLine("\n------------------------------------------------");
-            Console.WriteLine($"[Parsing Summary] Total Subcases: {result.Subcases.Count}");
-            Console.WriteLine("------------------------------------------------");
+            var parser = new F06Parser();
+            var result = parser.Parse(f06Path, Console.WriteLine);
 
-            //foreach (var subcase in result.Subcases.Values)
-            //{
-            //  Console.ForegroundColor = ConsoleColor.Cyan;
-            //  Console.WriteLine($"[Subcase {subcase.SubcaseID}]");
-            //  Console.ResetColor();
-
-            //  // 변위 데이터 개수 확인
-            //  var subcaseResult = subcase.BeamStresses;         
-
-            //  // 샘플 데이터 5개만 출력해보기
-            //  if (subcaseResult.Count > 0)
-            //  {
-            //    foreach (var d in subcaseResult.Take(10))
-            //    {
-            //      // ToString() 메서드가 F06Parser.cs에 정의되어 있다고 가정
-            //      Console.WriteLine($"     {d}");            
-            //    }
-            //  }    
-            //}
-            //Console.WriteLine("------------------------------------------------");
-
-            // 4) CSV 내보내기 실행 (요청하신 기능)
-            if (EXPORT_RESULT_CSV)
+            if (result.IsParsedSuccessfully)
             {
-              // 파일명 베이스: "MooringFittingData4235_Result" 등으로 저장됨
-              string exportBaseName = Path.GetFileNameWithoutExtension(inputFileName) + "_Result";
+              // [수정 완료] 이제 feModelContext에 접근 가능하므로 에러가 사라짐
+              BeamForcePostProcessor.CalculateStresses(result, feModelContext);
 
-              F06ResultExporter.ExportAll(result, CsvFolderPath, exportBaseName);
-
-              Console.WriteLine("\n>>> [Success] All results have been exported to CSV.");
+              if (EXPORT_RESULT_CSV)
+              {
+                string exportBaseName = Path.GetFileNameWithoutExtension(inputFileName) + "_Result";
+                F06ResultExporter.ExportAll(result, CsvFolderPath, exportBaseName);
+                Console.WriteLine("\n>>> [Success] All results have been exported to CSV.");
+              }
             }
+          }
+          else
+          {
+            Console.WriteLine(fatalMsg);
           }
         }
       }
-      else
+      catch (Exception ex)
       {
-        Console.WriteLine($"\n[Warning] F06 file not found: {f06Path}");
+        Console.WriteLine($"\n[Critical Error] {ex.Message}\n{ex.StackTrace}");
+      }
+      finally
+      {
+        if (logFileWriter != null)
+        {
+          Console.SetOut(originalConsoleOut);
+          logFileWriter.Close();
+          logFileWriter.Dispose();
+        }
       }
     }
-    
+
+
 
     // -----------------------------------------------------------------------
     // Helper Method: RunPipeline
