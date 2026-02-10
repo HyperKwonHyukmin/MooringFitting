@@ -448,5 +448,6 @@ namespace MooringFitting2026.Pipeline
       Console.WriteLine($"   -> Detected {elementCount} elements (Long-X at Bottom).");
       Console.WriteLine($"   -> Generated {addedCount} SPCs at Min Y={globalMinY:F1}.");
     }
+
   }
 }
