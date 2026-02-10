@@ -30,6 +30,7 @@ namespace MooringFitting2026.Pipeline
     private readonly string _csvPath;
     private readonly string _inputCsvFileName; // [추가] 원본 CSV 파일명 저장
     private readonly bool _runSolver;
+    public bool _enableAutoBottomSPC { get; set; } = true;
 
     private Dictionary<int, MooringFittingConnectionModifier.RigidInfo> _rigidMap
         = new Dictionary<int, MooringFittingConnectionModifier.RigidInfo>();
@@ -46,7 +47,8 @@ namespace MooringFitting2026.Pipeline
         InspectorOptions inspectOpt,
         string CsvFolderPath,
         string inputCsvFileName, // [수정] 원본 파일명 인자 추가
-        bool runSolver = true)
+        bool runSolver = true,
+        bool enableAutoBottomSPC=true)
     {
       _context = context ?? throw new ArgumentNullException(nameof(context));
       _rawStructureData = rawStructureData;
@@ -55,6 +57,7 @@ namespace MooringFitting2026.Pipeline
       _csvPath = CsvFolderPath;
       _inputCsvFileName = inputCsvFileName;
       _runSolver = runSolver;
+      _enableAutoBottomSPC = enableAutoBottomSPC;
     }
 
     public void Run()
@@ -67,9 +70,17 @@ namespace MooringFitting2026.Pipeline
       ExportBaseline();
       RunStagedPipeline();
 
-      foreach(var ele in _context.Elements)
+      // ★ [추가] 최종 모델 데이터(Node/Element) CSV 출력
+      ExportFinalContextToCsv();
+
+      // ★ [수정 1] spcList 변수 선언 및 초기화 (이 위치에 추가)
+      List<string> spcList = new List<string>();
+
+      // ★ [수정 2] 자동 SPC 생성 로직 (옵션 제어)
+      if (_enableAutoBottomSPC)
       {
-        Console.WriteLine(ele);
+        // 파라미터: (spcList, SPC ID: 1, Y축 허용오차: 1.0, X방향 최소길이: 50.0)
+        GenerateAutoBottomSPC(spcList, spcId: 1, yTol: 1.0, minLenX: 50.0);
       }
     }
 
@@ -278,13 +289,27 @@ namespace MooringFitting2026.Pipeline
     }
     private void CollapseShortElementsRun(double tol)
     {
-      var elements = _context.Elements; var nodes = _context.Nodes;
+      var elements = _context.Elements; 
+      var nodes = _context.Nodes;
       var keys = elements.Keys.ToList();
       foreach (var eid in keys)
       {
         if (!elements.Contains(eid)) continue;
         var ids = elements[eid].NodeIDs;
         if (ids.Count < 2) continue;
+
+        int n1 = ids[0];
+        int n2 = ids[1];
+
+        // 2. [추가] 노드 존재 여부 방어 코드 (Critical Error 방지)
+        // 병합 과정에서 인접 요소의 노드가 삭제되었을 수 있으므로 반드시 확인해야 함
+        if (!nodes.Contains(n1) || !nodes.Contains(n2))
+        {
+          // 노드가 없으면 거리 계산 불가 -> 스킵 (또는 필요시 요소 삭제 등 처리)
+          continue;
+        }
+
+
         if (DistanceUtils.GetDistanceBetweenNodes(ids[0], ids[1], nodes) < tol)
         {
           int keep = ids[0], remove = ids[1];
@@ -298,6 +323,130 @@ namespace MooringFitting2026.Pipeline
           if (nodes.Contains(remove)) nodes.Remove(remove);
         }
       }
+    }
+    private void ExportFinalContextToCsv()
+    {
+      Console.WriteLine("\n>>> [Debug] Exporting Final Context (Nodes/Elements) to CSV...");
+
+      string nodePath = Path.Combine(_csvPath, "Final_Nodes_Check.csv");
+      string elemPath = Path.Combine(_csvPath, "Final_Elements_Check.csv");
+
+      try
+      {
+        // 1. Nodes 내보내기 (기존 동일)
+        using (var sw = new StreamWriter(nodePath, false, System.Text.Encoding.UTF8))
+        {
+          sw.WriteLine("NodeID,X,Y,Z");
+          foreach (var kv in _context.Nodes)
+          {
+            var id = kv.Key;
+            var p = kv.Value;
+            sw.WriteLine($"{id},{p.X},{p.Y},{p.Z}");
+          }
+        }
+        Console.WriteLine($"   -> Exported Nodes: {Path.GetFileName(nodePath)} ({_context.Nodes.GetNodeCount()} EA)");
+
+        // 2. Elements 내보내기 (★ Property Type/Dim 추가됨)
+        using (var sw = new StreamWriter(elemPath, false, System.Text.Encoding.UTF8))
+        {
+          // 헤더 수정: PropType, PropDim 열 추가
+          sw.WriteLine("ElementID,PropertyID,PropType,PropDim,NodeCount,NodeIDs,ExtraData");
+
+          foreach (var kv in _context.Elements)
+          {
+            var id = kv.Key;
+            var e = kv.Value;
+
+            // [추가된 로직] Property 정보 조회
+            string pType = "Unknown";
+            string pDim = "";
+
+            // Properties 컬렉션에서 ID로 조회
+            if (_context.Properties.TryGetValue(e.PropertyID, out var prop))
+            {
+              pType = prop.Type; // 예: "I", "T", "PBEAM"
+              if (prop.Dim != null && prop.Dim.Count > 0)
+              {
+                // 치수 리스트를 슬래시(/)로 연결하여 문자열로 변환 (예: "200/90/10/14")
+                pDim = string.Join("/", prop.Dim);
+              }
+            }
+
+            // 기존 로직
+            string nodeStr = string.Join(";", e.NodeIDs);
+            string extraStr = "";
+            if (e.ExtraData != null && e.ExtraData.Count > 0)
+            {
+              extraStr = string.Join("|", e.ExtraData.Select(x => $"{x.Key}={x.Value}"));
+            }
+
+            // CSV 쓰기 (중간에 pType, pDim 추가)
+            sw.WriteLine($"{id},{e.PropertyID},{pType},{pDim},{e.NodeIDs.Count},{nodeStr},{extraStr}");
+          }
+        }
+        Console.WriteLine($"   -> Exported Elements: {Path.GetFileName(elemPath)} ({_context.Elements.Count} EA)");
+      }
+      catch (Exception ex)
+      {
+        Console.WriteLine($"   [Error] Failed to export final context CSV: {ex.Message}");
+      }
+    }
+
+    private void GenerateAutoBottomSPC(List<string> spcList, int spcId, double yTol, double minLenX)
+    {
+      Console.WriteLine($"\n>>> [Auto SPC] Detecting elements at Min Y (Long in X-Axis)...");
+
+      var nodes = _context.Nodes;
+      var elements = _context.Elements;
+
+      // ★ [수정 3] Count 뒤에 괄호()를 붙이거나 GetNodeCount() 사용
+      // (Nodes 클래스 구조상 Count가 메서드이거나 LINQ 확장 메서드인 경우임)
+      if (nodes.GetNodeCount() == 0) return;
+
+      // 1. 전체 노드 중 Y좌표의 최소값(Min Y) 찾기
+      double globalMinY = nodes.Min(n => n.Value.Y);
+      Console.WriteLine($"   -> Global Min Y: {globalMinY:F3}");
+
+      // ... (이하 로직 동일) ...
+
+      var targetNodeIDs = new HashSet<int>();
+      int elementCount = 0;
+
+      foreach (var kv in elements)
+      {
+        var elem = kv.Value;
+        if (elem.NodeIDs.Count < 2) continue; // List<int>의 Count는 속성이므로 괄호 없음 (정상)
+
+        // 해당 요소의 노드들 좌표 가져오기
+        var elemNodes = elem.NodeIDs.Select(id => nodes[id]).ToList();
+
+        // [조건 A] 높이 검사
+        bool isAtBottom = elemNodes.All(p => Math.Abs(p.Y - globalMinY) < yTol);
+        if (!isAtBottom) continue;
+
+        // [조건 B] 길이 검사
+        double minX = elemNodes.Min(p => p.X);
+        double maxX = elemNodes.Max(p => p.X);
+        double lenX = Math.Abs(maxX - minX);
+
+        if (lenX >= minLenX)
+        {
+          foreach (var nid in elem.NodeIDs) targetNodeIDs.Add(nid);
+          elementCount++;
+        }
+      }
+
+      // SPC 구문 생성
+      int addedCount = 0;
+      foreach (var nid in targetNodeIDs)
+      {
+        string bdfLine = $"SPC,{spcId},{nid},123456,0.0";
+        spcList.Add(bdfLine);
+        addedCount++;
+      }
+
+      Console.WriteLine($"   -> Detected {elementCount} elements (Long-X at Bottom).");
+      Console.WriteLine($"   -> Generated {addedCount} SPCs at Min Y={globalMinY:F1}.");
     }
   }
 }
