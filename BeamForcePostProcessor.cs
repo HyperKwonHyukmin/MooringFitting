@@ -124,13 +124,13 @@ namespace MooringFitting2026.Services.Analysis
             // 4. Bending Stress (변수 추적 적용)
 
             // Calc_My (약축 굽힘): BM2 / minW_Strong (강축 계수로 나눔)
-            force.Calc_My = (minW_Strong > 1e-9)
-                ? Math.Round(force.BM2 / minW_Strong, 2) : 0.0;
+            force.Calc_My = (minW_Weak > 1e-9)
+                ? Math.Round(force.BM2 / minW_Weak, 2) : 0.0;
 
             // Calc_Mz (강축 굽힘): BM1 / minW_Weak (약축 계수로 나눔)
             // ★ 사용자가 의심하는 부분 ★
-            force.Calc_Mz = (minW_Weak > 1e-9)
-                ? Math.Round(force.BM1 / minW_Weak, 2) : 0.0;
+            force.Calc_Mz = (minW_Strong > 1e-9)
+                ? Math.Round(force.BM1 / minW_Strong, 2) : 0.0;
           }
         }
       }
