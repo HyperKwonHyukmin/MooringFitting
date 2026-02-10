@@ -58,7 +58,7 @@ namespace MooringFitting2026.Services.SectionProperties
 
       // 4. Sz (Weak Axis 1st Moment of Area)
       // 식: (Tt*Bt^2 + Tb*Bb^2 + Hw*Tw^2) / 8
-      double Sz = (d.Tt * Math.Pow(d.Bt, 2) + d.Bb * Math.Pow(d.Bb, 2) + d.Hw * Math.Pow(d.Tw, 2)) / 8.0;
+      double Sz = (d.Tt * Math.Pow(d.Bt, 2) + d.Tb * Math.Pow(d.Bb, 2) + d.Hw * Math.Pow(d.Tw, 2)) / 8.0;
 
       // 5. Iy (Strong Axis Inertia, 이미지 상 Iy)
       // 평행축 정리 적용
@@ -88,7 +88,7 @@ namespace MooringFitting2026.Services.SectionProperties
         // Ix = 1.30/3 * (Sum(b*t^3))
         // 계수 1.30은 개단면 비틀림 보정 계수로 보임 (이미지 수식 준수)
         double sum_bt3 = (d.Bb * Math.Pow(d.Tb, 3)) + (d.Hw * Math.Pow(d.Tw, 3)) + (d.Bt * Math.Pow(d.Tt, 3));
-        Ix = (1.30 / 3.0) * sum_bt3;
+        Ix = sum_bt3 / 3.0;
       }
 
       // 8. Shear Areas (Ay, Az)
