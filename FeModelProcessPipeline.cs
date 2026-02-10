@@ -8,6 +8,7 @@ using MooringFitting2026.Modifier.ElementModifier;
 using MooringFitting2026.Modifier.NodeModifier;
 using MooringFitting2026.Parsers; // [추가] F06Parser 사용
 using MooringFitting2026.RawData;
+using MooringFitting2026.Services.Analysis;
 using MooringFitting2026.Services.Load;
 using MooringFitting2026.Services.Reporting;
 using MooringFitting2026.Services.SectionProperties;
@@ -65,6 +66,11 @@ namespace MooringFitting2026.Pipeline
 
       ExportBaseline();
       RunStagedPipeline();
+
+      foreach(var ele in _context.Elements)
+      {
+        Console.WriteLine(ele);
+      }
     }
 
     private void ExportBaseline()
@@ -224,7 +230,7 @@ namespace MooringFitting2026.Pipeline
           if (parseResult.IsParsedSuccessfully)
           {
             Console.WriteLine("   -> [Result] F06 Data Extraction Complete.");
-            // TODO: 추후 추출된 데이터를 활용하는 로직 추가
+            BeamForcePostProcessor.CalculateStresses(parseResult, _context);
           }
         }
       }
