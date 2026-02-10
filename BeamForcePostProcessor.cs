@@ -77,55 +77,60 @@ namespace MooringFitting2026.Services.Analysis
           // -------------------------------------------------------------
           if (sectionProps != null && sectionProps.Ax > 1e-9)
           {
-            // 1. 관성모멘트 매핑 (Strong/Weak Axis)
-            force.Debug_I_Strong = sectionProps.Iy; // Izz
-            force.Debug_I_Weak = sectionProps.Iz;   // Iyy
+            // -------------------------------------------------------------
+            // [디버깅] 중간 변수값 추적 (Tracing Variables)
+            // -------------------------------------------------------------
+            // 1. 강축(Strong) 관련 변수
+            double Wyb = sectionProps.Wyb;
+            double Wyt = sectionProps.Wyt;
+            double minW_Strong = Math.Min(Wyb, Wyt); // 강축 단면계수 (Mz용)
 
-            // 2. 치수 정보 문자열 생성 (예: "[100, 200, 10, 15]")
-            if (context.Properties.TryGetValue(propID, out var propEntity))
-            {
-              // 예시 출력 결과: "I: [300, 150, 150, 10, 12, 10]" 또는 "T: [200, 100...]"
-              string typeStr = propEntity.Type; // "I", "T", "PBEAM" 등
-              string dimStr = string.Join(", ", propEntity.Dim);
+            // 2. 약축(Weak) 관련 변수 (여기가 의심되는 부분)
+            double Wzb = sectionProps.Wzb;
+            double Wzt = sectionProps.Wzt;
+            double minW_Weak = Math.Min(Wzb, Wzt);   // 약축 단면계수 (My용)
 
-              // 편하신 포맷으로 조합 (Type과 Dims 결합)
-              force.Debug_DimInfo = $"{typeStr}: [{dimStr}]";
-            }
-            else
-            {
-              force.Debug_DimInfo = "Unknown Property";
-            }
+            // 3. 디버깅 정보 출력 (Debug_DimInfo 컬럼에 모두 기록)
+            // 형식: "W_Strong(T/B):{값}/{값} | W_Weak(T/B):{값}/{값} | BM1:{값} | BM2:{값}"
+            force.Debug_DimInfo = $"Strong[{Wyt:F0}/{Wyb:F0}] Weak[{Wzt:F0}/{Wzb:F0}]";
 
-            // 1. Axial Stress (Nx = Fx / Ax)
+            // 4. 검증용 데이터 기록
+            force.Debug_Wy_Min = minW_Strong;
+            force.Debug_Wz_Min = minW_Weak;
+
+            // -------------------------------------------------------------
+            // [응력 계산] 사용자 요청 로직 반영
+            // -------------------------------------------------------------
+
+            // 1. Axial Stress
             force.Debug_Area = sectionProps.Ax;
             force.Calc_Nx = Math.Round(force.Axial / sectionProps.Ax, 2);
 
-            // 2. Torsional Stress (Mx = T / Wx)
+            // 2. Torsion
             force.Debug_Wx = sectionProps.Wx;
             force.Calc_Mx = (sectionProps.Wx > 1e-9)
                 ? Math.Round(force.TotalTorque / sectionProps.Wx, 2) : 0.0;
 
-            // 3. Shear Y (Qy = Vy / Ay)
+            // 3. Shear (강제 스왑 적용 유지)
+            // Shear1(강축전단) -> Ay(약축면적) / Shear2(약축전단) -> Az(강축면적)
             force.Debug_Ay = sectionProps.Ay;
             force.Calc_Qy = (sectionProps.Ay > 1e-9)
-                ? Math.Round(force.Shear1 / sectionProps.Ay, 2) : 0.0;
+                 ? Math.Round(force.Shear1 / sectionProps.Ay, 2) : 0.0;
 
-            // 4. Shear Z (Qz = Vz / Az)
             force.Debug_Az = sectionProps.Az;
             force.Calc_Qz = (sectionProps.Az > 1e-9)
-                ? Math.Round(force.Shear2 / sectionProps.Az, 2) : 0.0;
+                 ? Math.Round(force.Shear2 / sectionProps.Az, 2) : 0.0;
 
-            // 5. Bending Y (My = My / Wy_min)
-            double minWy = Math.Min(sectionProps.Wyb, sectionProps.Wyt);
-            force.Debug_Wy_Min = minWy;
-            force.Calc_My = (minWy > 1e-9)
-                ? Math.Round(force.BM2 / minWy, 2) : 0.0;
+            // 4. Bending Stress (변수 추적 적용)
 
-            // 6. Bending Z (Mz = Mz / Wz_min)
-            double minWz = Math.Min(sectionProps.Wzb, sectionProps.Wzt);
-            force.Debug_Wz_Min = minWz;
-            force.Calc_Mz = (minWz > 1e-9)
-                ? Math.Round(force.BM1 / minWz, 2) : 0.0;
+            // Calc_My (약축 굽힘): BM2 / minW_Strong (강축 계수로 나눔)
+            force.Calc_My = (minW_Strong > 1e-9)
+                ? Math.Round(force.BM2 / minW_Strong, 2) : 0.0;
+
+            // Calc_Mz (강축 굽힘): BM1 / minW_Weak (약축 계수로 나눔)
+            // ★ 사용자가 의심하는 부분 ★
+            force.Calc_Mz = (minW_Weak > 1e-9)
+                ? Math.Round(force.BM1 / minW_Weak, 2) : 0.0;
           }
         }
       }
