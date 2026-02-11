@@ -72,30 +72,31 @@ namespace MooringFitting2026.Modifier.ElementModifier
           depNodeIDs.RemoveAll(id => spcSet.Contains(id));
 
           // C. 제외된 노드에 대해 Z+100 요소 생성 (추가된 로직)
-          foreach (var spcNodeID in excludedSpcNodes)
-          {
-            if (!nodes.Contains(spcNodeID)) continue;
+          //foreach (var spcNodeID in excludedSpcNodes)
+          //{
+          //  if (!nodes.Contains(spcNodeID)) continue;
 
-            // 1) 기준 노드 좌표
-            var basePt = nodes[spcNodeID];
+          //  // 1) 기준 노드 좌표
+          //  var basePt = nodes[spcNodeID];
 
-            // 2) 상단 노드 생성 (Z + 100)
-            int topNodeID = nodes.AddOrGet(basePt.X, basePt.Y, basePt.Z + 100.0);
+          //  // 2) 상단 노드 생성 (Z + 100)
+          //  int topNodeID = nodes.AddOrGet(basePt.X, basePt.Y, basePt.Z + 100.0);
 
-            // 3) Property ID 찾기 (해당 SPC 노드에 연결되어 있던 기존 요소의 속성 사용)
-            // 만약 찾을 수 없다면 기본값(예: 1) 사용 혹은 에러 처리
-            int targetPropID = nodeToPropMap.TryGetValue(spcNodeID, out int pid) ? pid : 1;
+          //  // 3) Property ID 찾기 (해당 SPC 노드에 연결되어 있던 기존 요소의 속성 사용)
+          //  // 만약 찾을 수 없다면 기본값(예: 1) 사용 혹은 에러 처리
+          //  int targetPropID = nodeToPropMap.TryGetValue(spcNodeID, out int pid) ? pid : 1;
 
-            // 4) 요소 생성 (SPC Node -> Top Node)
-            // ExtraData에 생성 사유 기록
-            var extraData = new Dictionary<string, string> { { "Type", "SPC_Vertical_Extension" } };
+          //  // 4) 요소 생성 (SPC Node -> Top Node)
+          //  // ExtraData에 생성 사유 기록
+          //  var extraData = new Dictionary<string, string> { { "Type", "SPC_Vertical_Extension" } };
 
-            // 요소 추가 (Elements.AddNew는 내부적으로 ID 자동 증가)
-            context.Elements.AddNew(new List<int> { spcNodeID, topNodeID }, targetPropID, extraData);
+          //  // 요소 추가 (Elements.AddNew는 내부적으로 ID 자동 증가)
+          //  context.Elements.AddNew(new List<int> { spcNodeID, topNodeID }, targetPropID, extraData);
 
             // (선택) 로그 출력
             // log($"    -> [Auto-Gen] SPC Extension Element created at Node {spcNodeID} (PropID: {targetPropID})");
-          }
+          //}
+
         }
 
         if (depNodeIDs.Count == 0)
